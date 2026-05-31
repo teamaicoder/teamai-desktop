@@ -6,6 +6,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "dev": "electron .",
     "setup": "node scripts/copy-vendor.js",
     "test": "jest --runInBand",
     "postinstall": "electron-rebuild -f"
@@ -23,6 +24,7 @@
   "devDependencies": {
     "electron": "^31.0.0",
     "electron-rebuild": "^3.2.9",
+    "electron-reload": "^2.0.0-alpha.1",
     "jest": "^30.4.2"
   }
 }

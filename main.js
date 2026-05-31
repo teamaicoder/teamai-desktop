@@ -11,6 +11,20 @@ const {
 
 console.log('[main] starting, electron', process.versions.electron, 'node', process.versions.node);
 
+if (process.env.NODE_ENV !== 'production') {
+  try {
+    require('electron-reload')(__dirname, {
+      electron: require('electron'),
+      hardResetMethod: 'exit',
+    });
+  } catch { }
+}
+
+// Enforce single instance — kill any previous dev instance on reload
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+}
+
 let nodePty;
 try {
   nodePty = require('node-pty');

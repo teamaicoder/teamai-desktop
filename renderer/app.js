@@ -678,8 +678,8 @@ async function openFileTab(entry) {
   };
 
   state.tabs.push(tab);
-  setActiveTab(tab.id);
   syncTabContents();
+  setActiveTab(tab.id);
   updatePanelVisibility();
 
   try {
@@ -711,8 +711,8 @@ async function openTerminalTab(dir) {
   };
 
   state.tabs.push(tab);
-  setActiveTab(tab.id);
   syncTabContents();
+  setActiveTab(tab.id);
   updatePanelVisibility();
 }
 

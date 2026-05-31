@@ -448,7 +448,6 @@ html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMa
   flex: 1;
   background: #1e1e1e;
   overflow: hidden;
-  display: flex;
   flex-direction: column;
 }
 .terminal-container {

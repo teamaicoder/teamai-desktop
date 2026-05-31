@@ -5,11 +5,9 @@ console.log('[preload] starting');
 const { contextBridge, ipcRenderer } = require('electron');
 const path = require('path');
 const os = require('os');
+const { marked } = require('marked');
 
 console.log('[preload] core requires OK');
-
-// marked lives in the main process (md:render IPC) — keeps the preload thin
-// and avoids native-module resolution issues in the renderer context.
 
 try {
   contextBridge.exposeInMainWorld('api', {
@@ -33,8 +31,8 @@ try {
     // Native folder picker
     openFolder: defaultPath => ipcRenderer.invoke('dialog:openFolder', { defaultPath }),
 
-    // Markdown → HTML (handled by main process)
-    renderMarkdown: text => ipcRenderer.invoke('md:render', text),
+    // Markdown → HTML (sync, runs in preload via marked)
+    renderMarkdown: text => marked.parse(text, { breaks: true }),
 
     // PTY
     ptySpawn:  cwd            => ipcRenderer.invoke('pty:spawn', { cwd }),
