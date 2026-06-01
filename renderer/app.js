@@ -330,6 +330,9 @@ function closeTab(id) {
     terminals.delete(tab.ptyId);
   }
 
+  const editor = toastEditorInstances.get(id);
+  if (editor) { try { editor.destroy(); } catch { } toastEditorInstances.delete(id); }
+
   const pane = findTabPane(id);
   if (pane) pane.remove();
 
@@ -466,29 +469,55 @@ function updateTabContent(tabId) {
 }
 
 // Markdown
+// Tracks active Toast UI Editor instances by tab id so we can destroy them.
+const toastEditorInstances = new Map();
+
 function buildMarkdownPane(pane, toolbar, body, tab) {
-  body.className = 'markdown-body';
   body.style.flex = '1';
-  body.style.overflowY = 'auto';
+  body.style.overflow = 'hidden';
+  body.style.display = 'flex';
+  body.style.flexDirection = 'column';
 
   if (tab.editMode) {
-    // Edit mode: textarea
-    body.style.padding = '0';
-    body.style.maxWidth = '100%';
     body.innerHTML = '';
 
-    const ta = document.createElement('textarea');
-    ta.className = 'text-editor';
-    ta.value = tab.content || '';
-    ta.oninput = () => {
-      if (!tab.dirty) { tab.dirty = true; renderDirtyIndicator(toolbar, tab, ta); }
-    };
-    body.appendChild(ta);
-    ta.focus();
+    const editor = new toastui.Editor({
+      el: body,
+      initialValue: tab.content || '',
+      previewStyle: 'tab',
+      initialEditType: 'wysiwyg',
+      height: '100%',
+      usageStatistics: false,
+    });
 
-    renderDirtyIndicator(toolbar, tab, ta);
+    toastEditorInstances.set(tab.id, editor);
+
+    editor.on('change', () => {
+      if (!tab.dirty) {
+        tab.dirty = true;
+        const proxy = { get value() { return editor.getMarkdown(); } };
+        renderDirtyIndicator(toolbar, tab, proxy);
+      }
+    });
   } else {
+    // Destroy any lingering editor instance for this tab
+    const prev = toastEditorInstances.get(tab.id);
+    if (prev) { try { prev.destroy(); } catch { } toastEditorInstances.delete(tab.id); }
+
+    body.className = 'markdown-body';
+    body.style.overflowY = 'auto';
     body.innerHTML = window.api.renderMarkdown(tab.content || '');
+
+    body.addEventListener('click', e => {
+      const a = e.target.closest('a[href]');
+      if (!a) return;
+      const href = a.getAttribute('href');
+      if (!href || href.startsWith('http://') || href.startsWith('https://') || href.startsWith('#')) return;
+      e.preventDefault();
+      const resolved = window.api.join(window.api.dirname(tab.path), href);
+      const name = window.api.basename(resolved);
+      openFileTab({ path: resolved, name });
+    });
   }
 
   // Toggle edit button
@@ -496,10 +525,13 @@ function buildMarkdownPane(pane, toolbar, body, tab) {
   editBtn.className = 'toolbar-btn';
   editBtn.innerHTML = tab.editMode ? `${IC.eye} View` : `${IC.edit} Edit`;
   editBtn.onclick = async () => {
-    if (tab.editMode && tab.dirty) {
-      const ta = pane.querySelector('textarea');
-      if (ta) { tab.content = ta.value; tab.dirty = false; }
-      await window.api.writeFile(tab.path, tab.content);
+    if (tab.editMode) {
+      const editor = toastEditorInstances.get(tab.id);
+      tab.content = editor ? editor.getMarkdown() : tab.content;
+      if (tab.dirty) {
+        tab.dirty = false;
+        await window.api.writeFile(tab.path, tab.content);
+      }
     }
     tab.editMode = !tab.editMode;
     buildFilePane(pane, tab);
@@ -767,8 +799,31 @@ window.addEventListener('error', e => {
   console.error('[app] uncaught error:', e.message, e.filename, e.lineno);
 });
 
+// ── Top-level navigation ──────────────────────────────────────────────────
+function initTopNav() {
+  const tabs = document.querySelectorAll('.nav-tab');
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      const section = tab.dataset.section;
+      tabs.forEach(t => t.classList.toggle('active', t === tab));
+      document.querySelectorAll('.section-pane').forEach(pane => {
+        pane.classList.toggle('active', pane.id === `section-${section}`);
+      });
+      // Re-fit any visible terminals when switching back to build
+      if (section === 'build') {
+        const active = state.tabs.find(t => t.id === state.activeTabId);
+        if (active?.type === 'terminal') {
+          const ti = terminals.get(active.ptyId);
+          if (ti) requestAnimationFrame(() => ti.fitAddon.fit());
+        }
+      }
+    });
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   console.log('[app] DOMContentLoaded — calling init()');
+  initTopNav();
   init().catch(err => {
     document.body.innerHTML = `
       <div style="padding:24px;font-family:monospace;color:#c00;white-space:pre-wrap">

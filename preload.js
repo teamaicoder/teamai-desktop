@@ -14,6 +14,8 @@ try {
     // Path utilities
     basename: p => path.basename(p),
     extname:  p => path.extname(p).toLowerCase(),
+    dirname:  p => path.dirname(p),
+    join:     (...parts) => path.join(...parts),
     homedir:  () => os.homedir(),
 
     // File system

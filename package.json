@@ -18,6 +18,8 @@
     ]
   },
   "dependencies": {
+    "@toast-ui/editor": "^2.5.4",
+    "easymde": "^2.21.0",
     "marked": "^12.0.0",
     "node-pty": "^1.0.0"
   },

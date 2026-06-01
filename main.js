@@ -76,6 +76,15 @@ function createWindow() {
   });
   win.webContents.on('did-finish-load', () => console.log('[main] renderer finished loading'));
 
+  // Block any attempt to navigate away from index.html (e.g. clicking an unhandled link)
+  win.webContents.on('will-navigate', (e, url) => {
+    const indexUrl = `file://${path.join(__dirname, 'renderer', 'index.html')}`;
+    if (!url.startsWith(indexUrl)) {
+      console.log(`[main] blocked navigation to ${url}`);
+      e.preventDefault();
+    }
+  });
+
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.webContents.openDevTools({ mode: 'detach' });
 }
