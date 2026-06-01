@@ -642,19 +642,22 @@ function buildTerminalPane(pane, tab) {
 
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
-  term.open(container);
-
-  requestAnimationFrame(() => {
-    fitAddon.fit();
-    window.api.ptyResize(tab.ptyId, term.cols, term.rows);
-  });
 
   term.onData(data => window.api.ptyWrite(tab.ptyId, data));
   term.onResize(({ cols, rows }) => window.api.ptyResize(tab.ptyId, cols, rows));
 
-  new ResizeObserver(() => fitAddon.fit()).observe(container);
-
+  // Store before open so setActiveTab's RAF can find it
   terminals.set(tab.ptyId, { term, fitAddon });
+
+  // Defer open until the pane is visible — xterm requires the container to have
+  // real dimensions when open() is called, so we must wait until setActiveTab
+  // has set display:flex on the pane.
+  requestAnimationFrame(() => {
+    term.open(container);
+    fitAddon.fit();
+    window.api.ptyResize(tab.ptyId, term.cols, term.rows);
+    new ResizeObserver(() => fitAddon.fit()).observe(container);
+  });
 }
 
 // ── Open file tab ─────────────────────────────────────────────────────────────
