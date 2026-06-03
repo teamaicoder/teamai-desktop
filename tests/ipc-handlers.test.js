@@ -321,6 +321,7 @@ describe('PTY handlers', () => {
   let nodePty;
   try { nodePty = require('node-pty'); } catch { }
 
+  // Skip PTY tests when node-pty native module is not compiled for this environment (e.g. CI)
   const maybeTest = nodePty ? test : test.skip;
 
   test('ptySpawn throws when nodePty is null', () => {

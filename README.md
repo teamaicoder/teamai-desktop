@@ -24,7 +24,8 @@ npm run dev      # launch with hot reload
 | `npm run dev` | Start with hot reload (renderer reloads on save, main restarts on `main.js` change) |
 | `npm start` | Start without hot reload |
 | `npm run setup` | Copy vendor assets from `node_modules` into `renderer/vendor/` |
-| `npm test` | Run all tests |
+| `npm test` | Run Jest unit tests |
+| `npm run test:ui` | Run Playwright UI tests against the real Electron app |
 | `npm test -- --testPathPattern=ipc-handlers` | Run a single test file |
 | `npm run dist` | Package for macOS |
 
