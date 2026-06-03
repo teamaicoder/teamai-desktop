@@ -28,18 +28,46 @@ function writeFile(filePath, content) {
   fs.writeFileSync(filePath, content, 'utf8');
 }
 
+function renameEntry(oldPath, newPath) {
+  fs.renameSync(oldPath, newPath);
+}
+
+function deleteEntry(entryPath) {
+  fs.rmSync(entryPath, { recursive: true, force: true });
+}
+
+function mkdirEntry(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function touchEntry(filePath) {
+  fs.writeFileSync(filePath, '', { flag: 'wx' }); // fail if already exists
+}
+
 // ── Preferences ───────────────────────────────────────────────────────────────
 
-const PREFS_DEFAULT = () => ({ starredFolders: [], lastOpenFolder: null });
+const PREFS_DEFAULT = () => ({
+  starredFolders: [],
+  lastOpenFolder: null,
+  sectionFolders: {},
+});
 
 function loadPrefs(prefsPath) {
   try {
     if (!fs.existsSync(prefsPath)) return PREFS_DEFAULT();
     const data = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
-    // Ensure required keys are always present
+    // Migrate legacy ideas-specific prefs into sectionFolders
+    const sectionFolders = (typeof data.sectionFolders === 'object' && data.sectionFolders !== null)
+      ? data.sectionFolders : {};
+    if (!sectionFolders.ideas) {
+      sectionFolders.ideas = {};
+      if (typeof data.ideasFolder === 'string') sectionFolders.ideas.folder = data.ideasFolder;
+      if (typeof data.lastIdeasFolder === 'string') sectionFolders.ideas.lastFolder = data.lastIdeasFolder;
+    }
     return {
       starredFolders: Array.isArray(data.starredFolders) ? data.starredFolders : [],
       lastOpenFolder: typeof data.lastOpenFolder === 'string' ? data.lastOpenFolder : null,
+      sectionFolders,
     };
   } catch {
     return PREFS_DEFAULT();
@@ -102,6 +130,7 @@ function ptyKill(ptys, id) {
 
 module.exports = {
   listDir, readFile, writeFile,
+  renameEntry, deleteEntry, mkdirEntry, touchEntry,
   loadPrefs, savePrefs,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,

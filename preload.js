@@ -19,9 +19,17 @@ try {
     homedir:  () => os.homedir(),
 
     // File system
-    listDir:   p              => ipcRenderer.invoke('fs:list',  p),
-    readFile:  p              => ipcRenderer.invoke('fs:read',  p),
-    writeFile: (p, content)   => ipcRenderer.invoke('fs:write', { filePath: p, content }),
+    listDir:      p              => ipcRenderer.invoke('fs:list',   p),
+    readFile:     p              => ipcRenderer.invoke('fs:read',   p),
+    writeFile:    (p, content)   => ipcRenderer.invoke('fs:write',  { filePath: p, content }),
+    renameEntry:  (oldPath, newPath) => ipcRenderer.invoke('fs:rename', { oldPath, newPath }),
+    deleteEntry:  (entryPath, isDir) => ipcRenderer.invoke('fs:delete', { entryPath, isDir }),
+    mkdir:        dirPath        => ipcRenderer.invoke('fs:mkdir',  { dirPath }),
+    touch:        filePath       => ipcRenderer.invoke('fs:touch',  { filePath }),
+
+    // Context menu
+    showContextMenu: (p, isDir, section) => ipcRenderer.send('ctx:show', { path: p, isDir, section }),
+    onCtxAction:     cb => ipcRenderer.on('ctx:action', (_, p) => cb(p)),
 
     // Preferences
     loadPrefs: ()     => ipcRenderer.invoke('prefs:load'),
@@ -30,8 +38,17 @@ try {
     // Git
     gitBranch: p => ipcRenderer.invoke('git:branch', p),
 
-    // Native folder picker
+    // Native folder / file pickers
     openFolder: defaultPath => ipcRenderer.invoke('dialog:openFolder', { defaultPath }),
+    openFile:   defaultPath => ipcRenderer.invoke('dialog:openFile',   { defaultPath }),
+
+    // Browser (WebContentsView — bypasses X-Frame-Options, full Chromium)
+    browserCreate:   ()           => ipcRenderer.invoke('browser:create'),
+    browserNavigate: (id, url)    => ipcRenderer.invoke('browser:navigate', { id, url }),
+    browserShow:     (id, bounds) => ipcRenderer.send('browser:show', { id, bounds }),
+    browserHide:     (id)         => ipcRenderer.send('browser:hide', { id }),
+    browserDestroy:  (id)         => ipcRenderer.invoke('browser:destroy', { id }),
+    onBrowserEvent:  cb           => ipcRenderer.on('browser:event', (_, p) => cb(p)),
 
     // Markdown → HTML (sync, runs in preload via marked)
     renderMarkdown: text => marked.parse(text, { breaks: true }),
@@ -45,6 +62,11 @@ try {
     // Streaming PTY events
     onPtyData: cb => ipcRenderer.on('pty:data', (_, p) => cb(p)),
     onPtyExit: cb => ipcRenderer.on('pty:exit', (_, p) => cb(p)),
+
+    // File watching (auto-reload)
+    watchFile:     p  => ipcRenderer.invoke('fs:watch', p),
+    unwatchFile:   p  => ipcRenderer.invoke('fs:unwatch', p),
+    onFileChanged: cb => ipcRenderer.on('fs:changed', (_, p) => cb(p)),
   });
 
   console.log('[preload] window.api exposed OK');

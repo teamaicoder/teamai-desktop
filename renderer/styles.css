@@ -20,10 +20,13 @@
   --color-md: #3b82f6;
   --color-json: #14b8a6;
   --color-text-file: #9ca3af;
+  --color-image: #8b5cf6;
+  --color-html: #f97316;
   --color-terminal: #22c55e;
   --color-star: #f59e0b;
   --color-git: #16a34a;
   --color-danger: #ef4444;
+  --color-hover: rgba(0,0,0,0.07);
 }
 
 html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; color: var(--color-on-surface); background: var(--color-bg); }
@@ -133,6 +136,37 @@ html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMa
   gap: 4px;
   background: var(--color-surface-high);
 }
+
+/* ── Sidebar toolbar (New File / New Folder actions) ─────────────────────── */
+.sidebar-toolbar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 1px;
+  padding: 3px 6px;
+  background: var(--color-surface-variant);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.sidebar-toolbar-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border: none;
+  background: none;
+  border-radius: 3px;
+  color: var(--color-on-surface-muted);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sidebar-toolbar-btn:hover {
+  background: var(--color-hover);
+  color: var(--color-on-surface);
+}
+.sidebar-toolbar-btn svg { flex-shrink: 0; }
 
 .sidebar-header-icon { color: var(--color-on-surface-muted); flex-shrink: 0; }
 
@@ -264,6 +298,26 @@ html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMa
 .file-row-action.terminal { color: var(--color-terminal); }
 .file-row-action.star { color: var(--color-on-surface-muted); }
 .file-row-action.star.starred { color: var(--color-star); }
+.file-row-action.danger { color: var(--color-on-surface-muted); }
+.file-row-action.danger:hover { color: var(--color-danger); background: rgba(239,68,68,0.08); }
+
+/* ── Inline rename / new-entry input ─────────────────────────────────────────── */
+.inline-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--color-primary);
+  border-radius: 3px;
+  background: var(--color-surface);
+  color: var(--color-on-surface);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-primary-container);
+}
+
+.new-entry-row { background: var(--color-primary-container); }
 
 .file-row-chevron {
   flex-shrink: 0;
@@ -367,6 +421,81 @@ html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMa
 .tab-chip:hover .tab-close,
 .tab-chip.active .tab-close { opacity: 1; }
 .tab-chip .tab-close:hover { background: rgba(0,0,0,0.1); color: var(--color-on-surface); }
+.tab-chip.active.browser-tab { border-bottom-color: var(--color-primary); }
+
+/* ── Tab bar + button ────────────────────────────────────────────────────── */
+.tab-add-wrap {
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  flex-shrink: 0;
+  position: sticky;
+  right: 0;
+  background: var(--color-surface-variant);
+}
+.tab-add-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--color-on-surface-muted);
+  padding: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.tab-add-btn:hover { background: rgba(0,0,0,0.08); color: var(--color-on-surface); }
+
+/* dropdown menu — body-appended, fixed-positioned */
+.tab-add-menu {
+  display: none;
+  position: fixed;
+  flex-direction: column;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  overflow: hidden;
+  min-width: 150px;
+  z-index: 9999;
+}
+.tab-add-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--color-on-surface);
+  text-align: left;
+  width: 100%;
+}
+.tab-add-item:hover { background: var(--color-surface-variant); }
+
+/* ── Browser pane ────────────────────────────────────────────────────────── */
+.browser-pane { display: flex; flex-direction: column; overflow: hidden; }
+.browser-toolbar { justify-content: stretch; padding: 6px 10px; }
+.browser-url-input {
+  flex: 1;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 13px;
+  background: var(--color-surface-variant);
+  color: var(--color-on-surface);
+  font-size: 12px;
+  outline: none;
+}
+.browser-url-input:focus { border-color: var(--color-primary); background: var(--color-surface); }
+/* Placeholder fills the remaining space; the native WebContentsView overlays it */
+.browser-placeholder { flex: 1; min-height: 0; }
 
 /* ── Tab content area ────────────────────────────────────────────────────── */
 #tab-content {
@@ -493,31 +622,32 @@ html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMa
   background: var(--color-surface-variant) !important;
 }
 
-/* ── Text editor ─────────────────────────────────────────────────────────── */
-.text-view {
+/* ── CodeMirror file viewer/editor ───────────────────────────────────────── */
+.code-pane {
   flex: 1;
-  padding: 16px;
-  overflow-y: auto;
-  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-  font-size: 13px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  line-height: 1.6;
-  user-select: text;
-  cursor: text;
+  position: relative;
+  overflow: hidden;
 }
-
-.text-editor {
-  flex: 1;
-  border: none;
-  outline: none;
-  resize: none;
-  padding: 16px;
+.code-pane > .CodeMirror {
+  position: absolute;
+  inset: 0;
+  height: auto;
   font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
   font-size: 13px;
   line-height: 1.6;
-  background: var(--color-surface);
-  color: var(--color-on-surface);
+  border: none;
+  border-radius: 0;
+}
+.code-pane > .CodeMirror .CodeMirror-scroll {
+  position: absolute;
+  inset: 0;
+  height: auto;
+  overflow: scroll !important;
+}
+/* Readonly view: slightly dimmed gutter to signal non-edit state */
+.code-pane > .CodeMirror.CodeMirror-readonly .CodeMirror-gutters {
+  background: var(--color-surface-variant);
+  border-right-color: var(--color-border);
 }
 
 /* ── JSON tree ───────────────────────────────────────────────────────────── */
@@ -541,6 +671,35 @@ html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMa
 .json-key { color: #6f42c1; }
 .json-bracket { color: var(--color-on-surface-muted); }
 .json-preview { font-size: 11px; color: var(--color-on-surface-muted); margin-left: 6px; }
+
+/* ── HTML preview ────────────────────────────────────────────────────────── */
+.html-preview {
+  flex: 1;
+  width: 100%;
+  border: none;
+  display: block;
+  background: #fff;
+}
+
+/* ── Image viewer ────────────────────────────────────────────────────────── */
+.image-pane {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background: var(--color-surface-variant);
+  padding: 24px;
+}
+
+.image-preview {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  box-shadow: 0 2px 16px rgba(0,0,0,0.12);
+  display: block;
+}
 
 /* ── Terminal ────────────────────────────────────────────────────────────── */
 .terminal-pane {
@@ -572,6 +731,121 @@ html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMa
   border-top-color: var(--color-primary);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
+}
+
+/* ── File Browser Section (shared by Ideas, Design, Plan, Test, Deploy, Operate) */
+.fbs-sidebar {
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-variant);
+  overflow: hidden;
+}
+
+.fbs-sidebar-header {
+  height: var(--sidebar-header-height);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  gap: 4px;
+  background: var(--color-surface-high);
+}
+
+.fbs-sidebar-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.fbs-starred-section { flex-shrink: 0; }
+.fbs-file-list { flex: 1; }
+
+.fbs-right-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-surface);
+  min-width: 0;
+}
+
+.fbs-file-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.fbs-tab-bar {
+  height: var(--tab-bar-height);
+  display: flex;
+  flex-direction: row;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--color-surface-variant);
+  flex-shrink: 0;
+}
+.fbs-tab-bar::-webkit-scrollbar { height: 0; }
+
+.fbs-tab-content {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.fbs-empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: var(--color-on-surface-muted);
+  font-size: 15px;
+}
+
+.fbs-split-handle {
+  height: 5px;
+  background: var(--color-border);
+  cursor: row-resize;
+  flex-shrink: 0;
+  transition: background 0.1s;
+}
+.fbs-split-handle:hover { background: var(--color-primary); }
+
+.fbs-terminal-area {
+  height: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #1e1e1e;
+}
+
+.fbs-terminal-header {
+  height: 26px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  background: #2a2a2a;
+  color: #888;
+  font-size: 11px;
+  font-family: 'Menlo', 'Monaco', monospace;
+  flex-shrink: 0;
+  border-bottom: 1px solid #333;
+  user-select: none;
+}
+
+.fbs-terminal-container {
+  flex: 1;
+  overflow: hidden;
+  padding: 4px;
 }
 
 /* ── Scrollbars ──────────────────────────────────────────────────────────── */

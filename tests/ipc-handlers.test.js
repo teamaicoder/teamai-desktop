@@ -209,25 +209,25 @@ describe('loadPrefs', () => {
 
   test('returns defaults when file does not exist', () => {
     const p = path.join(tmp, 'prefs.json');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {} });
   });
 
   test('parses starredFolders and lastOpenFolder correctly', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, JSON.stringify({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a' }));
-    expect(loadPrefs(p)).toEqual({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a' });
+    expect(loadPrefs(p)).toEqual({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a', sectionFolders: { ideas: {} } });
   });
 
   test('returns defaults for corrupt JSON', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, 'not valid json {{{{');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {} });
   });
 
   test('returns defaults for an empty file', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, '');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {} });
   });
 
   test('coerces missing starredFolders to []', () => {
@@ -267,14 +267,14 @@ describe('savePrefs', () => {
     const p = path.join(tmp, 'prefs.json');
     const data = { starredFolders: ['/a', '/b'], lastOpenFolder: '/b' };
     savePrefs(p, data);
-    expect(loadPrefs(p)).toEqual(data);
+    expect(loadPrefs(p)).toEqual({ ...data, sectionFolders: { ideas: {} } });
   });
 
   test('overwrites previous prefs on second save', () => {
     const p = path.join(tmp, 'prefs.json');
     savePrefs(p, { starredFolders: ['/old'], lastOpenFolder: '/old' });
     savePrefs(p, { starredFolders: [], lastOpenFolder: '/new' });
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: '/new' });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: '/new', sectionFolders: { ideas: {} } });
   });
 });
 
@@ -321,6 +321,7 @@ describe('PTY handlers', () => {
   let nodePty;
   try { nodePty = require('node-pty'); } catch { }
 
+  // Skip PTY tests when node-pty native module is not compiled for this environment (e.g. CI)
   const maybeTest = nodePty ? test : test.skip;
 
   test('ptySpawn throws when nodePty is null', () => {
