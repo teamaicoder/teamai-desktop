@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Read the README first.** `README.md` contains setup steps, commands, architecture overview, and important notes about hot reload behaviour. Refer to it before making changes.
+
+## Repository policy
+
+This is a **public GitHub repository** (`github.com/teamaicoder/teamai-desktop`). Before pushing any commit:
+
+- All code must be production-quality — no debug hacks, commented-out dead code, or TODO shortcuts.
+- **Never commit secrets, API keys, tokens, passwords, or environment-specific data.** If a file contains any of these, abort and ask the user to handle it manually.
+- Never commit `.env` files or any file with credentials, even if they look like examples.
+- Review diffs for accidental inclusion of local paths, personal data, or internal hostnames before pushing.
+
 ## Commands
 
 ```bash
@@ -9,7 +20,7 @@ npm run dev       # Start app with hot reload (renderer reloads on file save, ma
 npm start         # Start app without hot reload
 npm test          # Run all tests
 npm test -- --testPathPattern=ipc-handlers   # Run a single test file
-npm run setup     # Copy xterm.js vendor assets into renderer/vendor/
+npm run setup     # Copy all vendor assets into renderer/vendor/ (xterm, CodeMirror, Toast UI Editor)
 ```
 
 There is no build step — the renderer is plain HTML/CSS/JS served directly from disk.
@@ -34,5 +45,32 @@ The app follows Electron's standard two-process model with strict context isolat
 - Tabs are keyed by file path for file tabs, and `terminal_${dir}_${timestamp}` for terminal tabs.
 - PTY data flows: main process → `pty:data` IPC event → `terminals Map<ptyId, {term, fitAddon}>` → xterm.js write.
 
-**Tests** (`tests/ipc-handlers.test.js`)
-- Tests run in Node (Jest, no Electron). They import `main/handlers.js` directly and inject mock `nodePty`/`ptys` objects. No mocking of the file system — tests use `os.tmpdir()` for real I/O.
+**Vendor assets** (`renderer/vendor/`)
+- Copied by `npm run setup` from `node_modules`. Never edit these files directly.
+- `codemirror.js` + `codemirror.css` — base CodeMirror 5 library.
+- `cm-simple.js` — CodeMirror `addon/mode/simple` addon, required by the Rust syntax mode (`cm-modes/rust.js`). Must be loaded before `cm-modes/rust.js` in `index.html`.
+- `cm-modes/*.js` — language syntax modes (javascript, python, yaml, shell, css, xml, htmlmixed, clike, go, ruby, rust, toml).
+- `xterm.js`, `xterm-addon-fit.js`, `xterm.css` — xterm.js terminal emulator.
+- `toastui-editor.js`, `toastui-editor.css`, `easymde.min.js`, `easymde.min.css` — rich text / WYSIWYG markdown editors.
+
+**Tests**
+
+*Unit tests* (`tests/ipc-handlers.test.js`)
+- Run with `npm test`. Jest, no Electron. Imports `main/handlers.js` directly; injects mock `nodePty`/`ptys`. No file system mocking — uses `os.tmpdir()` for real I/O.
+
+*UI tests* (`tests/ui/`)
+- Run with `npm run test:ui`. Uses Playwright's `@playwright/test` + `_electron` launcher to drive the real Electron app.
+- The app runs with `NODE_ENV=test`, which disables the visible window (`show: false`), electron-reload, DevTools, and the single-instance lock. Playwright connects via CDP so no window ever appears on screen — tests can run without stealing focus.
+- `tests/ui/helpers/app.js` provides shared helpers:
+  - `launchApp()` — launches the app and waits for `init() complete` in the console before resolving.
+  - `clickTabAddItem(win, itemText)` — hovers the `+` button and clicks a dropdown item (`'New File'` or `'New Browser'`).
+  - `makeTempDir()` — creates a temp directory with `hello.md`, `data.json`, `script.js`, and `subdir/nested.md`. Returns `{ dir, cleanup }`.
+  - `navigateSidebarTo(win, dir)` — calls `window._testNavigateTo(dir)` in the renderer to navigate the sidebar without a native dialog.
+- `window._testNavigateTo(dir)` is defined at the bottom of `renderer/app.js` and sets `state.rootDir` then calls `navigateTo(dir)`.
+- Test files by feature area:
+  - `tab-add-menu.test.js` — `+` button, hover dropdown, New File, New Browser tab, navigation, close
+  - `top-nav.test.js` — top nav tabs, section switching, active state, FBS init on first visit
+  - `sidebar.test.js` — file list, folder navigation, go-up, toolbar buttons, starring
+  - `file-tabs.test.js` — opening files, deduplication, tab switching, close, empty state
+  - `terminal.test.js` — terminal tab open via folder hover action, xterm canvas, close
+  - `markdown.test.js` — preview rendering, edit/preview toggle

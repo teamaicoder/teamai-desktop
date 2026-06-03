@@ -1,28 +1,58 @@
 #!/usr/bin/env node
-// Copies xterm.js assets from the sibling Flutter project's bundled assets.
+// Copies vendor assets from node_modules into renderer/vendor/.
 // Run once after `npm install`: npm run setup
 
 const fs = require('fs');
 const path = require('path');
 
-const src = path.join(__dirname, '..', '..', 'app', 'md_browser', 'assets', 'terminal');
 const dst = path.join(__dirname, '..', 'renderer', 'vendor');
+const nm = path.join(__dirname, '..', 'node_modules');
 
 fs.mkdirSync(dst, { recursive: true });
 
-const files = ['xterm.js', 'xterm-addon-fit.js', 'xterm.css'];
 let ok = true;
-for (const file of files) {
-  const srcPath = path.join(src, file);
-  const dstPath = path.join(dst, file);
-  if (!fs.existsSync(srcPath)) {
-    console.error(`Missing: ${srcPath}`);
+
+// xterm — pulled from node_modules
+const xtermFiles = [
+  { src: path.join(nm, 'xterm', 'lib', 'xterm.js'),            dst: path.join(dst, 'xterm.js') },
+  { src: path.join(nm, 'xterm-addon-fit', 'lib', 'xterm-addon-fit.js'), dst: path.join(dst, 'xterm-addon-fit.js') },
+  { src: path.join(nm, 'xterm', 'css', 'xterm.css'),           dst: path.join(dst, 'xterm.css') },
+];
+for (const { src, dst: dstPath } of xtermFiles) {
+  const file = path.basename(dstPath);
+  if (!fs.existsSync(src)) {
+    console.error(`Missing: ${src} — run npm install`);
     ok = false;
     continue;
   }
-  fs.copyFileSync(srcPath, dstPath);
+  fs.copyFileSync(src, dstPath);
   const size = (fs.statSync(dstPath).size / 1024).toFixed(1);
   console.log(`  Copied ${file} (${size} KB)`);
+}
+
+// CodeMirror simple mode addon (required by rust mode)
+const cmSimpleSrc = path.join(nm, 'codemirror', 'addon', 'mode', 'simple.js');
+const cmSimpleDst = path.join(dst, 'cm-simple.js');
+if (!fs.existsSync(cmSimpleSrc)) {
+  console.error(`Missing: ${cmSimpleSrc} — run npm install`);
+  ok = false;
+} else {
+  fs.copyFileSync(cmSimpleSrc, cmSimpleDst);
+  const size = (fs.statSync(cmSimpleDst).size / 1024).toFixed(1);
+  console.log(`  Copied cm-simple.js (${size} KB)`);
+}
+
+// CodeMirror language modes
+const cmModeDir = path.join(__dirname, '..', 'node_modules', 'codemirror', 'mode');
+const cmModeDst = path.join(dst, 'cm-modes');
+fs.mkdirSync(cmModeDst, { recursive: true });
+for (const mode of ['javascript', 'yaml', 'python', 'shell', 'css', 'xml', 'htmlmixed', 'clike', 'go', 'ruby', 'rust', 'toml']) {
+  const srcPath = path.join(cmModeDir, mode, `${mode}.js`);
+  const dstPath = path.join(cmModeDst, `${mode}.js`);
+  if (!fs.existsSync(srcPath)) { console.error(`Missing mode: ${srcPath}`); ok = false; continue; }
+  fs.copyFileSync(srcPath, dstPath);
+  const size = (fs.statSync(dstPath).size / 1024).toFixed(1);
+  console.log(`  Copied cm-modes/${mode}.js (${size} KB)`);
 }
 
 // CodeMirror (required by Toast UI Editor v2)
