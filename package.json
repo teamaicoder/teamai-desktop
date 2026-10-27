@@ -51,10 +51,10 @@
     "xterm-addon-fit": "^0.8.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.2.1",
     "@playwright/test": "^1.60.0",
-    "electron": "^31.0.0",
+    "electron": "^44.10.0",
     "electron-builder": "^26.8.1",
-    "electron-rebuild": "^3.2.9",
     "electron-reload": "^2.0.0-alpha.1",
     "jest": "^30.4.2",
     "playwright": "^1.60.0"

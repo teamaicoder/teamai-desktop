@@ -24,6 +24,16 @@ Run it again after any dependency upgrade.
 
 That's expected for a build you made yourself. See [Building and installing](building-and-installing.md#install-into-applications): right-click → **Open**, or run `xattr -dr com.apple.quarantine /Applications/TeamAICoder.app`.
 
+## "Malware Blocked and Moved to Bin" for Electron.app
+
+Apple has revoked the notarisation of some old, unsupported Electron releases, and macOS reports a revoked app as malware. You'll only see this on an old checkout that pinned Electron 31 or earlier. Pull the latest `main`, which uses a supported Electron release, then reinstall:
+
+```bash
+rm -rf node_modules && npm ci
+```
+
+To check an Electron build yourself, run `spctl -a -vv -t exec node_modules/electron/dist/Electron.app`. A revoked build reports `notarization indicates this code has been revoked`.
+
 ## A change to `app.js` doesn't show up in `npm run dev`
 
 Hot reload reloads renderer files, but it doesn't re-run startup wiring such as event listeners attached in `init()`. Stop the app with `Ctrl-C` and run `npm run dev` again.
