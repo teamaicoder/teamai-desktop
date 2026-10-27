@@ -73,3 +73,7 @@ Follows Electron's standard two-process model with strict context isolation.
 
 ### Tests (`tests/`)
 - Jest, Node environment (no Electron). Handlers are tested by importing `main/handlers.js` directly with injected mocks. File system tests use `os.tmpdir()` — no mocking.
+
+## Licence
+
+[MIT](LICENSE)

@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in TeamAICoder. Issues, ideas and pull requests are all welcome.
+Thanks for your interest in TeamAICoder. Issues, ideas and pull requests are all welcome. By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).
 
 ## Development setup
 

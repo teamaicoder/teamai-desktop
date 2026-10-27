@@ -2,7 +2,8 @@
   "name": "teamaicoder",
   "productName": "TeamAICoder",
   "version": "1.0.0",
-  "description": "File browser, editor, and terminal",
+  "description": "Open-source desktop workbench for running many software projects with AI coding agents",
+  "license": "MIT",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
