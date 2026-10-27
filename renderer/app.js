@@ -542,6 +542,7 @@ function closeTab(id) {
     if (ti) { try { ti.term.dispose(); } catch { } }
     terminals.delete(tab.ptyId);
   } else if (tab.type === 'browser' && tab.viewId) {
+    window.api.browserHide(tab.viewId);
     window.api.browserDestroy(tab.viewId);
   }
 
@@ -1651,7 +1652,10 @@ class FileBrowserSection {
     if (idx < 0) return;
     const tab = this.s.tabs[idx];
     if (tab.path) window.api.unwatchFile(tab.path);
-    if (tab.type === 'browser' && tab.viewId) window.api.browserDestroy(tab.viewId);
+    if (tab.type === 'browser' && tab.viewId) {
+      window.api.browserHide(tab.viewId);
+      window.api.browserDestroy(tab.viewId);
+    }
     const editor = toastEditorInstances.get(id);
     if (editor) { try { editor.destroy(); } catch { } toastEditorInstances.delete(id); }
     cmInstances.delete(id);
@@ -2031,10 +2035,14 @@ async function init() {
     }
   });
 
-  // Reposition browser views on window resize
+  // Reposition browser views on window resize (Build section + all FBS sections)
   window.addEventListener('resize', () => {
     const active = state.tabs.find(t => t.id === state.activeTabId);
     if (active?.type === 'browser') positionBrowserView(active);
+    for (const sec of Object.values(SECTIONS)) {
+      const secActive = sec.s.tabs.find(t => t.id === sec.s.activeTabId);
+      if (secActive?.type === 'browser') sec._positionBrowserView(secActive);
+    }
   });
 
   // Auto-reload: when a watched file changes, reload any matching tab in view mode

@@ -375,14 +375,21 @@ ipcMain.on('browser:hide', (event, { id }) => {
   const view = browserViewMap.get(id);
   if (!view) return;
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (win) try { win.contentView.removeChildView(view); } catch {}
+  if (win) try { win.contentView.removeChildView(view); } catch (e) {
+    console.warn(`[main] browser:hide removeChildView failed id=${id}:`, e.message);
+  }
 });
 
 ipcMain.handle('browser:destroy', (event, { id }) => {
   const view = browserViewMap.get(id);
   if (!view) return;
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (win) try { win.contentView.removeChildView(view); } catch {}
+  if (win) try { win.contentView.removeChildView(view); } catch (e) {
+    console.warn(`[main] browser:destroy removeChildView failed id=${id}:`, e.message);
+  }
   browserViewMap.delete(id);
+  try { view.webContents.close(); } catch (e) {
+    console.warn(`[main] browser:destroy webContents.close failed id=${id}:`, e.message);
+  }
   console.log(`[main] browser:destroy id=${id}`);
 });
