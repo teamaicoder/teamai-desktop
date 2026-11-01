@@ -52,6 +52,8 @@ To build the app and install it into `/Applications`, see [Building and installi
 | `npm run test:ui` | Run Playwright UI tests against the real Electron app |
 | `npm test -- --testPathPattern=ipc-handlers` | Run a single test file |
 | `npm run dist` | Package for macOS |
+| `make install` | Build and copy the app into `/Applications` |
+| `make default-markdown` | Make TeamAICoder the default app for Markdown files |
 
 ## Architecture
 

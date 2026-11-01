@@ -15,7 +15,7 @@ The app is written to `dist/mac-arm64/TeamAICoder.app` on Apple Silicon (`dist/m
 
 ```bash
 osascript -e 'quit app "TeamAICoder"' 2>/dev/null   # if it's already running
-ditto dist/mac-arm64/TeamAICoder.app /Applications/TeamAICoder.app
+make install      # builds, then copies the app into /Applications
 open /Applications/TeamAICoder.app
 ```
 
@@ -25,7 +25,19 @@ A build you made yourself isn't signed by a registered developer, so macOS Gatek
 xattr -dr com.apple.quarantine /Applications/TeamAICoder.app
 ```
 
-To update, pull the latest code, run `make build`, and repeat the `ditto` step.
+To update, pull the latest code and run `make install` again.
+
+## Make it the default app for Markdown
+
+TeamAICoder registers itself as an editor for Markdown (`.md`, `.markdown`, `.mdown`, `.mkd`), so it appears under **Open With** in Finder. To make it the default, so a double-click opens Markdown files in it:
+
+```bash
+make default-markdown
+```
+
+macOS may ask you to confirm the change. You can also do it by hand: select a `.md` file in Finder, **Get Info** → **Open with** → TeamAICoder → **Change All…**.
+
+A file opened from Finder shows in the Build section, rendered. If the app isn't running, it starts and then opens the file.
 
 ## Optional: sign and notarise with your own Apple Developer ID
 

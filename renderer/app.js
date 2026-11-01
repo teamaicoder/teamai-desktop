@@ -1021,6 +1021,13 @@ function buildTerminalPane(pane, tab) {
   });
 }
 
+// ── Files opened from Finder ──────────────────────────────────────────────────
+// Shown in the Build section, rendered (markdown opens in preview).
+function openFileFromFinder(filePath) {
+  document.querySelector('.nav-tab[data-section="build"]').click();
+  openFileTab({ path: filePath, name: window.api.basename(filePath) });
+}
+
 // ── Open file tab ─────────────────────────────────────────────────────────────
 async function openFileTab(entry) {
   console.log(`[app] openFileTab "${entry.path}"`);
@@ -2067,6 +2074,8 @@ async function init() {
   renderTabBar();
   updatePanelVisibility();
   initWorkbench();
+  window.api.onOpenFile(({ filePath }) => openFileFromFinder(filePath));
+  for (const filePath of await window.api.appReady()) openFileFromFinder(filePath);
   console.log('[app] init() complete');
 }
 

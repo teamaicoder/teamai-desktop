@@ -75,3 +75,4 @@ The app follows Electron's standard two-process model with strict context isolat
   - `terminal.test.js` — terminal tab open via folder hover action, xterm canvas, close
   - `markdown.test.js` — preview rendering, edit/preview toggle
   - `workbench.test.js` — Workbench tab: set/clear the URL from the menu, persistent session across restarts, external links open in the system browser, unreachable-URL error
+  - `open-file.test.js` — files opened from Finder (macOS `open-file`): open rendered in Build, switch section, reuse the tab
