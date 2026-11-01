@@ -50,6 +50,14 @@ try {
     browserDestroy:  (id)         => ipcRenderer.invoke('browser:destroy', { id }),
     onBrowserEvent:  cb           => ipcRenderer.on('browser:event', (_, p) => cb(p)),
 
+    // Workbench (dashboard web tab)
+    workbenchLoad:        url    => ipcRenderer.invoke('workbench:load', url),
+    workbenchReload:      ()     => ipcRenderer.invoke('workbench:reload'),
+    workbenchShow:        bounds => ipcRenderer.send('workbench:show', { bounds }),
+    workbenchHide:        ()     => ipcRenderer.send('workbench:hide'),
+    onWorkbenchEvent:     cb     => ipcRenderer.on('workbench:event', (_, p) => cb(p)),
+    onWorkbenchConfigure: cb     => ipcRenderer.on('workbench:configure', () => cb()),
+
     // Markdown → HTML (sync, runs in preload via marked)
     renderMarkdown: text => marked.parse(text, { breaks: true }),
 

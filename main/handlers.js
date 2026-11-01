@@ -50,7 +50,19 @@ const PREFS_DEFAULT = () => ({
   starredFolders: [],
   lastOpenFolder: null,
   sectionFolders: {},
+  workbenchUrl: null,
 });
+
+// The Workbench tab's URL: an http(s) URL, or null when unset or invalid
+function normalizeWorkbenchUrl(url) {
+  if (typeof url !== 'string' || !url.trim()) return null;
+  try {
+    const u = new URL(url.trim());
+    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;
+  } catch {
+    return null;
+  }
+}
 
 function loadPrefs(prefsPath) {
   try {
@@ -68,6 +80,7 @@ function loadPrefs(prefsPath) {
       starredFolders: Array.isArray(data.starredFolders) ? data.starredFolders : [],
       lastOpenFolder: typeof data.lastOpenFolder === 'string' ? data.lastOpenFolder : null,
       sectionFolders,
+      workbenchUrl: normalizeWorkbenchUrl(data.workbenchUrl),
     };
   } catch {
     return PREFS_DEFAULT();
@@ -131,7 +144,7 @@ function ptyKill(ptys, id) {
 module.exports = {
   listDir, readFile, writeFile,
   renameEntry, deleteEntry, mkdirEntry, touchEntry,
-  loadPrefs, savePrefs,
+  loadPrefs, savePrefs, normalizeWorkbenchUrl,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 };

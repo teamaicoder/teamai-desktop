@@ -24,6 +24,7 @@
         <button class="nav-tab" data-section="test">Test</button>
         <button class="nav-tab" data-section="deploy">Deploy</button>
         <button class="nav-tab" data-section="operate">Operate</button>
+        <button class="nav-tab" data-section="workbench" id="nav-workbench" hidden>Workbench</button>
       </div>
     </nav>
 
@@ -81,6 +82,22 @@
 
       <!-- Operate (populated dynamically by FileBrowserSection) -->
       <div class="section-pane" id="section-operate"></div>
+
+      <!-- Workbench: the dashboard in a web view (URL set from the Workbench menu) -->
+      <div class="section-pane" id="section-workbench">
+        <div class="workbench-toolbar">
+          <span class="workbench-url" id="workbench-url"></span>
+          <button class="workbench-btn" id="workbench-reload" title="Reload">Reload</button>
+          <button class="workbench-btn" id="workbench-settings" title="Set Workbench URL">Change URL…</button>
+        </div>
+        <div class="workbench-host" id="workbench-host">
+          <div class="workbench-error" id="workbench-error" hidden>
+            <h2>Can't reach the Workbench</h2>
+            <p id="workbench-error-detail"></p>
+            <button class="workbench-btn" id="workbench-retry">Retry</button>
+          </div>
+        </div>
+      </div>
 
     </div>
   </div>

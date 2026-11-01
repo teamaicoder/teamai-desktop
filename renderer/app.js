@@ -77,7 +77,7 @@ const state = {
   entries: [],
   tabs: [],        // { id, type, title, path?, fileType?, content?, editMode?, dirty?, ptyId? }
   activeTabId: null,
-  prefs: { starredFolders: [], lastOpenFolder: null, sectionFolders: {} },
+  prefs: { starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null },
   gitBranches: {}, // path → branch name
   gitScanGen: 0,
 };
@@ -2066,6 +2066,7 @@ async function init() {
   await navigateTo(startDir);
   renderTabBar();
   updatePanelVisibility();
+  initWorkbench();
   console.log('[app] init() complete');
 }
 
@@ -2082,6 +2083,117 @@ window.addEventListener('unhandledrejection', e => {
 window.addEventListener('error', e => {
   console.error('[app] uncaught error:', e.message, e.filename, e.lineno);
 });
+
+// ── Workbench (the dashboard as a web tab) ────────────────────────────────
+// The URL is a preference set from the Workbench menu. The tab is hidden until
+// it's set. The web view itself lives in main (one persistent-session view).
+const workbench = { loadedUrl: null, failed: false, dialogOpen: false };
+
+function isWorkbenchActive() {
+  return document.getElementById('section-workbench').classList.contains('active');
+}
+
+function positionWorkbench() {
+  if (!isWorkbenchActive() || workbench.failed || workbench.dialogOpen || !state.prefs.workbenchUrl) {
+    window.api.workbenchHide();
+    return;
+  }
+  const r = document.getElementById('workbench-host').getBoundingClientRect();
+  window.api.workbenchShow({ x: r.x, y: r.y, width: r.width, height: r.height });
+}
+
+function showWorkbenchError(message) {
+  workbench.failed = true;
+  document.getElementById('workbench-error-detail').textContent = message;
+  document.getElementById('workbench-error').hidden = false;
+  positionWorkbench();
+}
+
+function loadWorkbench() {
+  const url = state.prefs.workbenchUrl;
+  if (!url) return;
+  workbench.loadedUrl = url;
+  workbench.failed = false;
+  document.getElementById('workbench-error').hidden = true;
+  window.api.workbenchLoad(url);
+  positionWorkbench();
+}
+
+// Show or hide the tab to match the preference; load the view when the URL changes
+function applyWorkbenchUrl() {
+  const url = state.prefs.workbenchUrl;
+  document.getElementById('nav-workbench').hidden = !url;
+  document.getElementById('workbench-url').textContent = url || '';
+  if (!url) {
+    workbench.loadedUrl = null;
+    if (isWorkbenchActive()) document.querySelector('.nav-tab[data-section="build"]').click();
+    window.api.workbenchHide();
+    return;
+  }
+  if (url !== workbench.loadedUrl) loadWorkbench();
+}
+
+function openWorkbenchDialog() {
+  if (workbench.dialogOpen) return;
+  workbench.dialogOpen = true;
+  positionWorkbench();   // the native view would cover the dialog
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'workbench-dialog-backdrop';
+  backdrop.innerHTML = `
+    <form class="workbench-dialog" id="workbench-dialog">
+      <h3>Workbench URL</h3>
+      <p>The dashboard's address, for example your Workbench server on the tailnet. Leave it empty to hide the Workbench tab.</p>
+      <input type="text" id="workbench-url-input" placeholder="https://workbench.example.com" spellcheck="false">
+      <p class="invalid" id="workbench-url-invalid" hidden>Enter an http:// or https:// address.</p>
+      <div class="workbench-dialog-actions">
+        <button type="button" class="workbench-btn" id="workbench-dialog-cancel">Cancel</button>
+        <button type="submit" class="workbench-btn primary" id="workbench-dialog-save">Save</button>
+      </div>
+    </form>`;
+  document.body.appendChild(backdrop);
+  const input = backdrop.querySelector('#workbench-url-input');
+  input.value = state.prefs.workbenchUrl || '';
+  input.focus();
+  input.select();
+
+  const close = () => {
+    backdrop.remove();
+    workbench.dialogOpen = false;
+    positionWorkbench();
+  };
+  backdrop.querySelector('#workbench-dialog-cancel').addEventListener('click', close);
+  backdrop.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  backdrop.querySelector('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const raw = input.value.trim();
+    let url = null;
+    if (raw) {
+      try {
+        const u = new URL(raw);
+        if (u.protocol === 'http:' || u.protocol === 'https:') url = u.href;
+      } catch {}
+      if (!url) { backdrop.querySelector('#workbench-url-invalid').hidden = false; return; }
+    }
+    state.prefs.workbenchUrl = url;
+    await savePrefs();
+    close();
+    applyWorkbenchUrl();
+    if (url) document.getElementById('nav-workbench').click();
+  });
+}
+
+function initWorkbench() {
+  window.api.onWorkbenchConfigure(openWorkbenchDialog);
+  window.api.onWorkbenchEvent(({ type, desc, url }) => {
+    if (type === 'fail') showWorkbenchError(`${desc || 'The page failed to load'}: ${url}`);
+  });
+  document.getElementById('workbench-settings').addEventListener('click', openWorkbenchDialog);
+  document.getElementById('workbench-reload').addEventListener('click', loadWorkbench);
+  document.getElementById('workbench-retry').addEventListener('click', loadWorkbench);
+  window.addEventListener('resize', positionWorkbench);
+  applyWorkbenchUrl();
+}
 
 // ── Top-level navigation ──────────────────────────────────────────────────
 function initTopNav() {
@@ -2110,6 +2222,13 @@ function initTopNav() {
         // Hide build browser views when leaving Build
         for (const t of state.tabs) { if (t.type === 'browser' && t.viewId) window.api.browserHide(t.viewId); }
       }
+
+      if (section === 'workbench') {
+        for (const s of Object.values(SECTIONS)) {
+          for (const t of s.s.tabs) { if (t.type === 'browser' && t.viewId) window.api.browserHide(t.viewId); }
+        }
+      }
+      positionWorkbench();
 
       // All other sections: init on first visit, re-fit terminal / show browser on subsequent visits
       const sec = SECTIONS[section];

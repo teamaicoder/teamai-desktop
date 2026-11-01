@@ -9,10 +9,13 @@ const ROOT = path.join(__dirname, '..', '..', '..');
 
 // ── Launch ────────────────────────────────────────────────────────────────────
 
-async function launchApp() {
+// Each launch gets its own userData dir, so tests never read or write the real
+// preferences. Pass { userData } to relaunch against the same dir.
+async function launchApp({ userData } = {}) {
+  const dataDir = userData || fs.mkdtempSync(path.join(os.tmpdir(), 'tac-userdata-'));
   const app = await electron.launch({
     args: [ROOT],
-    env: { ...process.env, NODE_ENV: 'test' },
+    env: { ...process.env, NODE_ENV: 'test', TAC_USER_DATA: dataDir },
     timeout: 15000,
   });
 
@@ -26,7 +29,7 @@ async function launchApp() {
     });
   });
 
-  return { app, win };
+  return { app, win, userData: dataDir };
 }
 
 // ── Tab-bar + button ──────────────────────────────────────────────────────────

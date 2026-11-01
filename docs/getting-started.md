@@ -52,7 +52,15 @@ The **+** at the end of a section's tab strip opens:
 
 Clicking a file in the tree opens it in a tab. Markdown files open rendered. Switch to source or WYSIWYG mode to edit them. When a file changes on disk, for example because an agent edited it, its open tab reloads.
 
-## 5. A suggested first workspace
+## 5. The Workbench tab
+
+If you run the Workbench dashboard (the server side of TeamAICoder), point the app at it: **Workbench → Set Workbench URL…** in the menu bar. A **Workbench** tab appears at the end of the top bar and shows the dashboard.
+
+- The tab keeps its own session, so you stay signed in across restarts.
+- Links to other sites open in your normal browser.
+- Leave the URL empty to hide the tab again.
+
+## 6. A suggested first workspace
 
 For a project in `~/code/my-app`:
 
