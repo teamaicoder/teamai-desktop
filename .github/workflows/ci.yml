@@ -31,9 +31,11 @@ jobs:
         run: npm run setup
 
       - name: Unit tests
+        timeout-minutes: 3
         run: npm test
 
       - name: UI tests (Playwright, Electron)
+        timeout-minutes: 10
         run: npx playwright test
 
       - name: Build unsigned app
