@@ -36,7 +36,7 @@ The app follows Electron's standard two-process model with strict context isolat
 - `main/handlers.js` — pure Node functions for fs, prefs, git (`exec git rev-parse`), and PTY lifecycle. Designed to be injectable for tests (no Electron imports; `nodePty` and `ptys` are passed in explicitly).
 
 **Preload** (`preload.js`)
-- Exposes `window.api` to the renderer via `contextBridge`. This is the only bridge between the sandboxed renderer and Node. All calls go through IPC channels prefixed by domain: `fs:*`, `prefs:*`, `git:*`, `pty:*`, `md:*`, `dialog:*`.
+- Exposes `window.api` to the renderer via `contextBridge`. This is the only bridge between the sandboxed renderer and Node. All calls go through IPC channels prefixed by domain: `fs:*`, `prefs:*`, `git:*`, `pty:*`, `md:*`, `dialog:*`, `browser:*`, `workbench:*`.
 - Markdown rendering (`marked`) runs in the main process and is called via `md:render` IPC — it never runs in the renderer.
 
 **Renderer** (`renderer/`)
@@ -62,7 +62,7 @@ The app follows Electron's standard two-process model with strict context isolat
 - Run with `npm run test:ui`. Uses Playwright's `@playwright/test` + `_electron` launcher to drive the real Electron app.
 - The app runs with `NODE_ENV=test`, which disables the visible window (`show: false`), electron-reload, DevTools, and the single-instance lock. Playwright connects via CDP so no window ever appears on screen — tests can run without stealing focus.
 - `tests/ui/helpers/app.js` provides shared helpers:
-  - `launchApp()` — launches the app and waits for `init() complete` in the console before resolving.
+  - `launchApp({ userData })` — launches the app with its own temp `userData` dir (so tests never touch real preferences) and waits for `init() complete`. Pass the returned `userData` back in to relaunch against the same preferences and sessions.
   - `clickTabAddItem(win, itemText)` — hovers the `+` button and clicks a dropdown item (`'New File'` or `'New Browser'`).
   - `makeTempDir()` — creates a temp directory with `hello.md`, `data.json`, `script.js`, and `subdir/nested.md`. Returns `{ dir, cleanup }`.
   - `navigateSidebarTo(win, dir)` — calls `window._testNavigateTo(dir)` in the renderer to navigate the sidebar without a native dialog.
@@ -74,3 +74,4 @@ The app follows Electron's standard two-process model with strict context isolat
   - `file-tabs.test.js` — opening files, deduplication, tab switching, close, empty state
   - `terminal.test.js` — terminal tab open via folder hover action, xterm canvas, close
   - `markdown.test.js` — preview rendering, edit/preview toggle
+  - `workbench.test.js` — Workbench tab: set/clear the URL from the menu, persistent session across restarts, external links open in the system browser, unreachable-URL error

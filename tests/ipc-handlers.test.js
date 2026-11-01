@@ -6,7 +6,7 @@ const os = require('os');
 
 const {
   listDir, readFile, writeFile,
-  loadPrefs, savePrefs,
+  loadPrefs, savePrefs, normalizeWorkbenchUrl,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('../main/handlers');
@@ -200,6 +200,27 @@ describe('writeFile', () => {
   });
 });
 
+// ── normalizeWorkbenchUrl ─────────────────────────────────────────────────────
+
+describe('normalizeWorkbenchUrl', () => {
+  test('accepts http and https URLs and normalises them', () => {
+    expect(normalizeWorkbenchUrl('https://workbench.example.com')).toBe('https://workbench.example.com/');
+    expect(normalizeWorkbenchUrl('  http://localhost:8080/board  ')).toBe('http://localhost:8080/board');
+  });
+
+  test('rejects other schemes', () => {
+    for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'ftp://example.com', 'data:text/html,hi']) {
+      expect(normalizeWorkbenchUrl(url)).toBeNull();
+    }
+  });
+
+  test('rejects empty, malformed and non-string values', () => {
+    for (const url of ['', '   ', 'not a url', null, undefined, 42, {}]) {
+      expect(normalizeWorkbenchUrl(url)).toBeNull();
+    }
+  });
+});
+
 // ── loadPrefs ─────────────────────────────────────────────────────────────────
 
 describe('loadPrefs', () => {
@@ -209,25 +230,33 @@ describe('loadPrefs', () => {
 
   test('returns defaults when file does not exist', () => {
     const p = path.join(tmp, 'prefs.json');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {} });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null });
   });
 
   test('parses starredFolders and lastOpenFolder correctly', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, JSON.stringify({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a' }));
-    expect(loadPrefs(p)).toEqual({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a', sectionFolders: { ideas: {} } });
+    expect(loadPrefs(p)).toEqual({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a', sectionFolders: { ideas: {} }, workbenchUrl: null });
   });
 
   test('returns defaults for corrupt JSON', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, 'not valid json {{{{');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {} });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null });
   });
 
   test('returns defaults for an empty file', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, '');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {} });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null });
+  });
+
+  test('keeps a valid workbenchUrl and drops an invalid one', () => {
+    const p = path.join(tmp, 'prefs.json');
+    fs.writeFileSync(p, JSON.stringify({ workbenchUrl: 'https://wb.example.com' }));
+    expect(loadPrefs(p).workbenchUrl).toBe('https://wb.example.com/');
+    fs.writeFileSync(p, JSON.stringify({ workbenchUrl: 'file:///etc/passwd' }));
+    expect(loadPrefs(p).workbenchUrl).toBeNull();
   });
 
   test('coerces missing starredFolders to []', () => {
@@ -267,14 +296,14 @@ describe('savePrefs', () => {
     const p = path.join(tmp, 'prefs.json');
     const data = { starredFolders: ['/a', '/b'], lastOpenFolder: '/b' };
     savePrefs(p, data);
-    expect(loadPrefs(p)).toEqual({ ...data, sectionFolders: { ideas: {} } });
+    expect(loadPrefs(p)).toEqual({ ...data, sectionFolders: { ideas: {} }, workbenchUrl: null });
   });
 
   test('overwrites previous prefs on second save', () => {
     const p = path.join(tmp, 'prefs.json');
     savePrefs(p, { starredFolders: ['/old'], lastOpenFolder: '/old' });
     savePrefs(p, { starredFolders: [], lastOpenFolder: '/new' });
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: '/new', sectionFolders: { ideas: {} } });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: '/new', sectionFolders: { ideas: {} }, workbenchUrl: null });
   });
 });
 

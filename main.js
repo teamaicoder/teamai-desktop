@@ -1,12 +1,12 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, Menu, clipboard, WebContentsView } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, MenuItem, clipboard, shell, WebContentsView } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const {
   listDir, readFile, writeFile,
   renameEntry, deleteEntry, mkdirEntry, touchEntry,
-  loadPrefs, savePrefs,
+  loadPrefs, savePrefs, normalizeWorkbenchUrl,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('./main/handlers');
@@ -14,6 +14,9 @@ const {
 console.log('[main] starting, electron', process.versions.electron, 'node', process.versions.node);
 
 const IS_TEST = process.env.NODE_ENV === 'test';
+
+// Tests point userData at a temp dir so they never touch real preferences or sessions
+if (IS_TEST && process.env.TAC_USER_DATA) app.setPath('userData', process.env.TAC_USER_DATA);
 
 if (!IS_TEST && process.env.NODE_ENV !== 'production') {
   try {
@@ -96,6 +99,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   console.log('[main] app ready, creating window');
+  addWorkbenchMenu();
   createWindow();
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
@@ -393,3 +397,92 @@ ipcMain.handle('browser:destroy', (event, { id }) => {
   }
   console.log(`[main] browser:destroy id=${id}`);
 });
+
+// ── Workbench (the dashboard as a web tab) ────────────────────────────────────
+
+// One view for the whole app. Its persistent partition keeps the dashboard's
+// session (cookies, storage) across restarts, separate from other browser tabs.
+let workbenchView = null;
+let workbenchOrigin = null;
+
+function sendToWindows(channel, payload) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    try { w.webContents.send(channel, payload); } catch {}
+  }
+}
+
+function openExternalIfWeb(url) {
+  try {
+    const { protocol } = new URL(url);
+    if (protocol === 'http:' || protocol === 'https:') shell.openExternal(url);
+  } catch {}
+}
+
+function getWorkbenchView() {
+  if (workbenchView) return workbenchView;
+  workbenchView = new WebContentsView({
+    webPreferences: { nodeIntegration: false, contextIsolation: true, partition: 'persist:workbench' },
+  });
+  const wc = workbenchView.webContents;
+
+  // Links that leave the dashboard open in the system browser, not inside the app
+  wc.setWindowOpenHandler(({ url }) => { openExternalIfWeb(url); return { action: 'deny' }; });
+  wc.on('will-navigate', (e, url) => {
+    let origin = null;
+    try { origin = new URL(url).origin; } catch {}
+    if (origin !== workbenchOrigin) {
+      e.preventDefault();
+      openExternalIfWeb(url);
+    }
+  });
+
+  wc.on('did-finish-load', () => sendToWindows('workbench:event', { type: 'loaded', url: wc.getURL() }));
+  wc.on('did-fail-load', (_, code, desc, url, isMainFrame) => {
+    if (code === -3 || !isMainFrame) return;   // -3 = aborted by a newer navigation
+    console.warn(`[main] workbench:fail code=${code} ${desc} ${url}`);
+    sendToWindows('workbench:event', { type: 'fail', code, desc, url });
+  });
+  return workbenchView;
+}
+
+ipcMain.handle('workbench:load', async (_, url) => {
+  const target = normalizeWorkbenchUrl(url);
+  if (!target) return false;
+  workbenchOrigin = new URL(target).origin;
+  console.log(`[main] workbench:load ${target}`);
+  getWorkbenchView().webContents.loadURL(target).catch(() => {});   // failures arrive as 'fail' events
+  return true;
+});
+
+ipcMain.handle('workbench:reload', () => {
+  if (workbenchView) workbenchView.webContents.reload();
+});
+
+ipcMain.on('workbench:show', (event, { bounds }) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return;
+  const view = getWorkbenchView();
+  if (!win.contentView.children.includes(view)) win.contentView.addChildView(view);
+  view.setBounds({
+    x: Math.round(bounds.x), y: Math.round(bounds.y),
+    width: Math.max(1, Math.round(bounds.width)), height: Math.max(1, Math.round(bounds.height)),
+  });
+});
+
+ipcMain.on('workbench:hide', event => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && workbenchView) try { win.contentView.removeChildView(workbenchView); } catch {}
+});
+
+// Menu bar: Workbench → Set Workbench URL… / Reload Workbench
+function addWorkbenchMenu() {
+  const menu = Menu.getApplicationMenu() || new Menu();
+  menu.append(new MenuItem({
+    label: 'Workbench',
+    submenu: [
+      { id: 'workbench-set-url', label: 'Set Workbench URL…', click: () => sendToWindows('workbench:configure', {}) },
+      { id: 'workbench-reload', label: 'Reload Workbench', click: () => workbenchView?.webContents.reload() },
+    ],
+  }));
+  Menu.setApplicationMenu(menu);
+}

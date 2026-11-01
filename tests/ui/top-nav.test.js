@@ -18,7 +18,8 @@ test.describe('top-level navigation', () => {
   });
 
   test('all nav tabs are visible', async () => {
-    const tabs = win.locator('.nav-tab');
+    // The Workbench tab stays hidden until its URL is set (see workbench.test.js)
+    const tabs = win.locator('.nav-tab:not([hidden])');
     await expect(tabs).toHaveCount(7);
     for (const label of ['Ideas', 'Design', 'Plan & Track', 'Build', 'Test', 'Deploy', 'Operate']) {
       await expect(win.locator(`.nav-tab:has-text("${label}")`)).toBeVisible();
