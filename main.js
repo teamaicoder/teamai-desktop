@@ -18,7 +18,7 @@ const IS_TEST = process.env.NODE_ENV === 'test';
 // Tests point userData at a temp dir so they never touch real preferences or sessions
 if (IS_TEST && process.env.TAC_USER_DATA) app.setPath('userData', process.env.TAC_USER_DATA);
 
-if (!IS_TEST && process.env.NODE_ENV !== 'production') {
+if (!IS_TEST && !app.isPackaged && process.env.NODE_ENV !== 'production') {
   try {
     require('electron-reload')(__dirname, {
       electron: require('electron'),
@@ -31,6 +31,32 @@ if (!IS_TEST && process.env.NODE_ENV !== 'production') {
 if (!IS_TEST && !app.requestSingleInstanceLock()) {
   app.quit();
 }
+
+// ── Opening files from Finder ("Open With", double-click when default) ────────
+// macOS sends 'open-file', possibly before the window exists, so paths queue
+// until the renderer has finished init() and asks for them.
+const pendingOpenFiles = [];
+let rendererReady = false;
+
+function openFileInApp(filePath) {
+  console.log(`[main] open-file ${filePath}`);
+  const win = BrowserWindow.getAllWindows()[0];
+  if (!win || !rendererReady) { pendingOpenFiles.push(filePath); return; }
+  win.webContents.send('app:open-file', { filePath });
+  if (win.isMinimized()) win.restore();
+  if (!IS_TEST) win.show();
+  win.focus();
+}
+
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  openFileInApp(filePath);
+});
+
+ipcMain.handle('app:ready', () => {
+  rendererReady = true;
+  return pendingOpenFiles.splice(0);
+});
 
 let nodePty;
 try {
@@ -94,7 +120,7 @@ function createWindow() {
   });
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  if (!IS_TEST) win.webContents.openDevTools({ mode: 'detach' });
+  if (!IS_TEST && !app.isPackaged) win.webContents.openDevTools({ mode: 'detach' });
 }
 
 app.whenReady().then(() => {
@@ -103,7 +129,9 @@ app.whenReady().then(() => {
   createWindow();
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) { rendererReady = false; createWindow(); }
+});
 
 // ── Markdown (in main so marked never touches the renderer/preload context) ──
 

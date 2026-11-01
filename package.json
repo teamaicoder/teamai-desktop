@@ -19,7 +19,25 @@
     "productName": "TeamAICoder",
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": "dir"
+      "target": "dir",
+      "extendInfo": {
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Markdown document",
+            "CFBundleTypeRole": "Editor",
+            "LSHandlerRank": "Default",
+            "LSItemContentTypes": [
+              "net.daringfireball.markdown"
+            ],
+            "CFBundleTypeExtensions": [
+              "md",
+              "markdown",
+              "mdown",
+              "mkd"
+            ]
+          }
+        ]
+      }
     },
     "files": [
       "main.js",

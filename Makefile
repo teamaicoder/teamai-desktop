@@ -1,7 +1,9 @@
-.PHONY: setup install build open clean test dev
+.PHONY: deps setup build install default-markdown open run clean test dev
+
+APP := dist/mac-arm64/TeamAICoder.app
 
 # Install npm dependencies
-install:
+deps:
 	npm install
 
 # Copy vendor assets into renderer/vendor/
@@ -12,9 +14,20 @@ setup:
 build: setup
 	npm run dist
 
+# Build and copy the app into /Applications (unsigned unless CSC_NAME is set)
+install: build
+	rm -rf /Applications/TeamAICoder.app
+	ditto "$(APP)" /Applications/TeamAICoder.app
+	@echo "Installed /Applications/TeamAICoder.app"
+
+# Make TeamAICoder the default app for Markdown files (run after install)
+default-markdown:
+	/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/TeamAICoder.app
+	swift scripts/set-default-markdown.swift
+
 # Open the built app
 open:
-	open "dist/mac-arm64/TeamAICoder.app"
+	open "$(APP)"
 
 # Build then open
 run: build open

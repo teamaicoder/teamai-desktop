@@ -58,6 +58,10 @@ try {
     onWorkbenchEvent:     cb     => ipcRenderer.on('workbench:event', (_, p) => cb(p)),
     onWorkbenchConfigure: cb     => ipcRenderer.on('workbench:configure', () => cb()),
 
+    // Files opened from Finder; appReady() returns any that arrived before init finished
+    appReady:   ()  => ipcRenderer.invoke('app:ready'),
+    onOpenFile: cb  => ipcRenderer.on('app:open-file', (_, p) => cb(p)),
+
     // Markdown → HTML (sync, runs in preload via marked)
     renderMarkdown: text => marked.parse(text, { breaks: true }),
 
