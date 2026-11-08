@@ -1,4 +1,4 @@
-.PHONY: deps setup build install default-markdown open run clean test dev
+.PHONY: deps setup build install default-markdown icon open run clean test dev
 
 APP := dist/mac-arm64/TeamAICoder.app
 
@@ -24,6 +24,10 @@ install: build
 default-markdown:
 	/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/TeamAICoder.app
 	swift scripts/set-default-markdown.swift
+
+# Rebuild the app icon (build/icon.icns, build/icon.png) from build/icon.svg
+icon:
+	./scripts/make-icon.sh
 
 # Open the built app
 open:

@@ -126,6 +126,8 @@ function createWindow() {
 
 app.whenReady().then(() => {
   console.log('[main] app ready, creating window');
+  // The packaged app takes its icon from the bundle; when run from source, set the Dock icon here
+  if (process.platform === 'darwin' && !app.isPackaged) app.dock.setIcon(path.join(__dirname, 'build', 'icon.png'));
   addWorkbenchMenu();
   createWindow();
 });
