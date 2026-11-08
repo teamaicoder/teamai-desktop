@@ -2,6 +2,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { pathToFileURL } = require('url');
 const { normalizeSession } = require('../renderer/session');
 const { exec } = require('child_process');
 
@@ -69,6 +71,7 @@ const PREFS_DEFAULT = () => ({
   workspaceRoot: null,
   session: normalizeSession(null),
   restoreClaude: true,
+  sectionHome: {},
 });
 
 // The Workbench tab's URL: an http(s) URL, or null when unset or invalid
@@ -106,6 +109,7 @@ function loadPrefs(prefsPath) {
       workspaceRoot: typeof data.workspaceRoot === 'string' ? data.workspaceRoot : null,
       session: normalizeSession(data.session),
       restoreClaude: data.restoreClaude !== false,
+      sectionHome: normalizeSectionHome(data.sectionHome),
     };
   } catch {
     return PREFS_DEFAULT();
@@ -357,6 +361,92 @@ function importProjects({ portfolioDir, workspaceRoot, existing }) {
   return mergeProjects(existing, resolved);
 }
 
+// ── Section home (a status board pinned first in a section) ──────────────────
+//
+// prefs.sectionHome[<section>] = { refresh, page, projectRefresh }
+//   refresh        shell command that (re)renders the all-projects page
+//   page           that page's URL (file:// or http(s); ~ and bare paths allowed)
+//   projectRefresh shell command template; {root} is the active project's
+//                  folder; its stdout names the per-project page it rendered
+
+const HOME_SECTIONS = ['ideas', 'design', 'plan', 'test', 'deploy', 'operate'];
+
+// A page location → a file:// or http(s) URL, or null. Accepts ~/…, bare
+// absolute paths and file://~/… (expanded against home).
+function normalizePageUrl(value, home) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  let s = value.trim();
+  if (/^file:\/\/~(\/|$)/.test(s)) s = s.slice('file://'.length);
+  if (s === '~' || s.startsWith('~/')) s = path.join(home, s.slice(1));
+  if (path.isAbsolute(s)) return pathToFileURL(s).href;
+  try {
+    const u = new URL(s);
+    return ['file:', 'http:', 'https:'].includes(u.protocol) ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeHomeEntry(raw, home) {
+  if (!raw || typeof raw !== 'object') return null;
+  const cmd = v => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  const entry = {
+    refresh: cmd(raw.refresh),
+    page: normalizePageUrl(raw.page, home),
+    projectRefresh: cmd(raw.projectRefresh),
+  };
+  return entry.page || entry.projectRefresh ? entry : null;
+}
+
+// prefs.sectionHome → only known sections with a usable entry
+function normalizeSectionHome(raw, home = os.homedir()) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const id of HOME_SECTIONS) {
+    const entry = normalizeHomeEntry(raw[id], home);
+    if (entry) out[id] = entry;
+  }
+  return out;
+}
+
+// The page a refresh command says it rendered, as a URL, or null. Prefers a
+// line starting with "wrote "; takes the last token there that is an http(s) or
+// file URL or a path ending in .html/.htm; otherwise the last such token on any
+// line.
+function parseRenderedPage(stdout, home = os.homedir()) {
+  const lines = String(stdout || '').split(/\r?\n/);
+  const pick = list => {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const tokens = list[i].trim().split(/\s+/);
+      for (let j = tokens.length - 1; j >= 0; j--) {
+        const tok = tokens[j].replace(/^[("'`<\[]+|[)"'`>\],;:.]+$/g, '');
+        if (/^(https?|file):\/\//i.test(tok) || /\.html?$/i.test(tok)) {
+          const url = normalizePageUrl(tok, home);
+          if (url) return url;
+        }
+      }
+    }
+    return null;
+  };
+  return pick(lines.filter(l => /^\s*wrote\s/i.test(l))) || pick(lines);
+}
+
+// Quote a value for a POSIX shell
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+// The project refresh command with {root} filled in (shell-quoted)
+function fillProjectCommand(template, root) {
+  return String(template).replace(/\{root\}/g, shellQuote(root));
+}
+
+// The last few lines of a command's error output, for showing inline
+function outputTail(text, maxLines = 6, maxChars = 800) {
+  const lines = String(text || '').trimEnd().split(/\r?\n/).filter(Boolean);
+  return lines.slice(-maxLines).join('\n').slice(-maxChars);
+}
+
 // ── Opening pages in the preview ─────────────────────────────────────────────
 
 // A URL a terminal may open in the preview: http(s) or file. Returns the
@@ -440,6 +530,7 @@ module.exports = {
   parseFrontmatter, normalizeRepo, readPortfolio, originUrl, scanWorkspace,
   projectRoot, resolveProjects, mergeProjects, importProjects,
   previewOpenUrl, parseOpenRequest,
+  HOME_SECTIONS, normalizePageUrl, normalizeSectionHome, parseRenderedPage, shellQuote, fillProjectCommand, outputTail,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 };

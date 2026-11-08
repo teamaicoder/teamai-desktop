@@ -12,6 +12,7 @@ const {
   parseFrontmatter, normalizeRepo, readPortfolio, originUrl, scanWorkspace,
   projectRoot, resolveProjects, mergeProjects, importProjects,
   previewOpenUrl, parseOpenRequest,
+  normalizePageUrl, normalizeSectionHome, parseRenderedPage, shellQuote, fillProjectCommand, outputTail,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('../main/handlers');
@@ -329,7 +330,7 @@ describe('windowOpenTarget', () => {
 // (and the default saved session)
 const NO_PROJECTS = {
   projects: [], activeProject: null, portfolioDir: null, workspaceRoot: null,
-  session: normalizeSession(null), restoreClaude: true,
+  session: normalizeSession(null), restoreClaude: true, sectionHome: {},
 };
 
 describe('loadPrefs', () => {
@@ -1027,5 +1028,90 @@ describe('teamai-open: wrapper script', () => {
     } finally {
       server.close();
     }
+  });
+});
+
+// ── Section home (status board) ───────────────────────────────────────────────
+
+describe('normalizePageUrl', () => {
+  test('turns paths and ~ into file URLs and keeps http(s)/file URLs', () => {
+    expect(normalizePageUrl('/srv/board/index.html', '/home/u')).toBe('file:///srv/board/index.html');
+    expect(normalizePageUrl('~/board/index.html', '/home/u')).toBe('file:///home/u/board/index.html');
+    expect(normalizePageUrl('file://~/board/index.html', '/home/u')).toBe('file:///home/u/board/index.html');
+    expect(normalizePageUrl('file:///a/b.html', '/home/u')).toBe('file:///a/b.html');
+    expect(normalizePageUrl('https://board.example.com/', '/home/u')).toBe('https://board.example.com/');
+  });
+
+  test('rejects relative paths, other schemes and empty input', () => {
+    for (const v of ['board.html', 'javascript:alert(1)', 'ftp://x.test/', '', '  ', null, 3]) {
+      expect(normalizePageUrl(v, '/home/u')).toBeNull();
+    }
+  });
+});
+
+describe('normalizeSectionHome', () => {
+  test('keeps known sections with a page or a project command', () => {
+    const out = normalizeSectionHome({
+      plan: { refresh: '  ./render all ', page: '~/b/index.html', projectRefresh: 'cd {root} && ./render' },
+      test: { projectRefresh: 'make status' },
+      build: { page: '/x.html' },
+      nowhere: { page: '/x.html' },
+      deploy: { refresh: 'only a command' },
+      ideas: 'nonsense',
+    }, '/home/u');
+    expect(out).toEqual({
+      plan: { refresh: './render all', page: 'file:///home/u/b/index.html', projectRefresh: 'cd {root} && ./render' },
+      test: { refresh: null, page: null, projectRefresh: 'make status' },
+    });
+  });
+
+  test('malformed input → no boards', () => {
+    expect(normalizeSectionHome(null)).toEqual({});
+    expect(normalizeSectionHome('x')).toEqual({});
+  });
+});
+
+describe('parseRenderedPage', () => {
+  test('takes the page from a "wrote" line, ignoring trailing notes', () => {
+    expect(parseRenderedPage('wrote /srv/board/projects/alpha.html (Alpha, portfolio, 0 TODO file(s))', '/h'))
+      .toBe('file:///srv/board/projects/alpha.html');
+  });
+
+  test('prefers the last "wrote" line over other mentions', () => {
+    const out = 'reading /srv/old.html\nwrote /srv/a.html\nwrote /srv/b.html\ndone, see /srv/other.html';
+    expect(parseRenderedPage(out, '/h')).toBe('file:///srv/b.html');
+  });
+
+  test('falls back to the last page-looking token on any line', () => {
+    expect(parseRenderedPage('Rendered.\nOpen ~/out/status.html.\n', '/h')).toBe('file:///h/out/status.html');
+    expect(parseRenderedPage('served at http://localhost:8080/board\n', '/h')).toBe('http://localhost:8080/board');
+    expect(parseRenderedPage('see "file:///srv/x.htm"', '/h')).toBe('file:///srv/x.htm');
+  });
+
+  test('null when nothing names a page', () => {
+    expect(parseRenderedPage('all good\n', '/h')).toBeNull();
+    expect(parseRenderedPage('wrote report.html', '/h')).toBeNull();
+    expect(parseRenderedPage('', '/h')).toBeNull();
+    expect(parseRenderedPage(undefined, '/h')).toBeNull();
+  });
+});
+
+describe('fillProjectCommand / shellQuote / outputTail', () => {
+  test('fills {root} shell-quoted, every occurrence', () => {
+    expect(fillProjectCommand('cd {root} && render {root}', '/w/my proj')).toBe("cd '/w/my proj' && render '/w/my proj'");
+    expect(shellQuote("it's")).toBe("'it'\\''s'");
+    expect(fillProjectCommand('make status', '/w')).toBe('make status');
+  });
+
+  test('a quoted root survives the shell', () => {
+    const { execFileSync } = require('child_process');
+    const root = "/tmp/a b/it's";
+    expect(execFileSync('/bin/sh', ['-c', fillProjectCommand('printf %s {root}', root)], { encoding: 'utf8' })).toBe(root);
+  });
+
+  test('keeps the last lines of error output', () => {
+    expect(outputTail('a\nb\n\nc\nd\ne\nf\ng\nh\n')).toBe('c\nd\ne\nf\ng\nh');
+    expect(outputTail('')).toBe('');
+    expect(outputTail('x'.repeat(2000)).length).toBe(800);
   });
 });

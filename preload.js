@@ -69,6 +69,11 @@ try {
     appReady:   ()  => ipcRenderer.invoke('app:ready'),
     onOpenFile: cb  => ipcRenderer.on('app:open-file', (_, p) => cb(p)),
 
+    // Section home (status board): refresh runs the configured command in main
+    homeRefresh:     opts => ipcRenderer.invoke('home:refresh', opts),
+    onHomeConfigure: cb   => ipcRenderer.on('home:configure', (_, p) => cb(p)),
+    onHomeClear:     cb   => ipcRenderer.on('home:clear', (_, p) => cb(p)),
+
     // Pages opened from a terminal (teamai-open / $BROWSER): { url, ptyId }
     onPreviewOpen: cb => ipcRenderer.on('preview:open', (_, p) => cb(p)),
 

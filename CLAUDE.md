@@ -36,7 +36,7 @@ The app follows Electron's standard two-process model with strict context isolat
 - `main/handlers.js` — pure Node functions for fs, prefs, git (`exec git rev-parse`), and PTY lifecycle. Designed to be injectable for tests (no Electron imports; `nodePty` and `ptys` are passed in explicitly).
 
 **Preload** (`preload.js`)
-- Exposes `window.api` to the renderer via `contextBridge`. This is the only bridge between the sandboxed renderer and Node. All calls go through IPC channels prefixed by domain: `fs:*`, `prefs:*`, `git:*`, `pty:*`, `md:*`, `dialog:*`, `browser:*`, `workbench:*`, `projects:*`, `preview:*` (`preview:open`, pages sent from terminals).
+- Exposes `window.api` to the renderer via `contextBridge`. This is the only bridge between the sandboxed renderer and Node. All calls go through IPC channels prefixed by domain: `fs:*`, `prefs:*`, `git:*`, `pty:*`, `md:*`, `dialog:*`, `browser:*`, `workbench:*`, `projects:*`, `preview:*` (`preview:open`, pages sent from terminals), `home:*` (status boards).
 - Markdown rendering (`marked`) runs in the main process and is called via `md:render` IPC — it never runs in the renderer.
 
 **Renderer** (`renderer/`)
@@ -56,6 +56,11 @@ The app follows Electron's standard two-process model with strict context isolat
 - Every PTY gets: `BROWSER` (path to `scripts/teamai-open`), `TEAMAICODER_SOCKET`, `TEAMAICODER_PTY_ID` (the PTY's id) and `TEAMAICODER_NODE` (`process.execPath`). `scripts/teamai-open` runs `scripts/teamai-open.js` under `ELECTRON_RUN_AS_NODE=1`; if the socket can't be reached it falls back to the system opener. Both scripts are `asarUnpack`ed in packaged builds and `main.js` resolves the unpacked path.
 - The renderer (`openFromTerminal`) routes by `ptyId`: a split tab's own preview, else a new browser tab after the owning terminal tab, else a new tab in the section owning the bottom terminal, else Build.
 - This socket is the intended base for a future MCP `preview_open` tool: an MCP server started from an app terminal inherits these variables and can send the same message.
+
+**Section home (status board)**
+- `prefs.sectionHome[<section>] = { refresh, page, projectRefresh }`, normalised by `normalizeSectionHome` (`~` and paths become `file://` URLs). The renderer adds a pinned, non-closable `type: 'home'` tab first in that `FileBrowserSection` (`ensureHome`, on init and every visit); it isn't saved in the session, so restore never duplicates it.
+- `home:refresh` (main) runs the command read from prefs on disk, never from the renderer, in `$SHELL -lc` (cwd: home, or the project root for `projectRefresh` with `{root}` shell-quoted). 90 s timeout, one run per section/mode/project at a time. A project run's page path comes from `parseRenderedPage(stdout)`. The renderer throttles automatic runs to one per 2 minutes per view.
+- `setActiveTab(id, { auto })`: only user choices (`auto: false`) mark `movedFromHome`, which stops the Status tab grabbing focus on later visits in the same session.
 
 **Vendor assets** (`renderer/vendor/`)
 - Copied by `npm run setup` from `node_modules`. Never edit these files directly.
@@ -90,4 +95,5 @@ The app follows Electron's standard two-process model with strict context isolat
   - `open-file.test.js` — files opened from Finder (macOS `open-file`): open rendered in Build, switch section, reuse the tab
   - `preview.test.js` — browser tabs and the Chat + Preview split: sign-in cookie persists across restarts, Chrome user agent, sign-in popups on the same session, new-tab links, back/forward, divider drag and saved ratio, section switching
   - `session.test.js` — session restore (tabs in Build and a section, active section and tab, terminal cwd, missing files skipped, `claude --continue` resume via a stand-in `claude`) and pages opened from terminals (Python `webbrowser` in a split lands in its preview, `$BROWSER` in a terminal tab opens a tab after it, a section's bottom terminal)
+  - `section-home.test.js` — status board: pinned Status tab first in Plan & Track, background refresh and 2-minute throttle, Refresh, file links inside the page, All/This project toggle, inline errors, the set-up dialog, kept first and not duplicated after a relaunch, cleared from the menu
   - `projects.test.js` — projects: import a fixture portfolio, the switcher with phase/health chips, choosing a project (Build repo list, missing repos greyed, sections at the project folder), Re-import from the menu, active project kept across restarts

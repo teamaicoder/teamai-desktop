@@ -106,6 +106,40 @@ When you quit and reopen the app, your tabs come back where they were, in Build 
 - **Terminals** start a fresh shell in the folder they were last in. Scrollback and running programs don't survive a restart, with one exception: a terminal that was running `claude` when you quit runs `claude --continue`, so the conversation picks up again. If two terminals in the same folder were running it, neither is resumed (they would both resume the same conversation). Set `"restoreClaude": false` in the preferences file to turn this off.
 - **Browser** and **Chat + Preview** tabs reload the page they were showing; you stay signed in.
 
+### A status board in Plan & Track
+
+A section can open on a status page of your own: a pinned **Status** tab, always first, that can't be closed. Set it up from the menu bar with **Plan & Track → Set Status Board…**, which asks for three things:
+
+| Field | What it is |
+|---|---|
+| **Refresh command** | A shell command that re-renders the all-projects page. It runs in your home folder, in your login shell. Optional: leave it empty for a page that's kept up to date some other way. |
+| **Page** | Where that page is: a file path (`~/…` works), a `file://` URL or an `http(s)://` URL. |
+| **Project refresh command** | A command that renders a page for one project. `{root}` is replaced with the active project's folder, and the command runs there. It must print the path of the page it wrote, ideally on a line starting with `wrote ` (for example `wrote /home/me/boards/alpha.html`). |
+
+For example, with a script that renders HTML status pages from your repos:
+
+```
+Refresh command:          ~/bin/render-status --all
+Page:                     ~/status/index.html
+Project refresh command:  cd {root} && ~/bin/render-status --project .
+```
+
+When you open the section, the Status tab shows the page straight away, runs the refresh command in the background and reloads when it finishes. It refreshes at most once every two minutes on its own; **Refresh** runs it immediately and the label beside it shows when it last finished. **All projects / This project** switches between the two pages (This project needs an active project). If a command fails, the end of its error output appears above the page and the last good page stays visible. Links between pages (for example from the board to a project's page) open inside the tab.
+
+If you move to another tab in the section, that tab stays active when you come back; the Status tab is shown first again the next time you launch the app. **Plan & Track → Clear Status Board** removes it.
+
+The setting is stored as `sectionHome` in the preferences file, keyed by section (`plan`, `ideas`, `design`, `test`, `deploy`, `operate`), so other sections can have a board too:
+
+```json
+"sectionHome": {
+  "plan": {
+    "refresh": "~/bin/render-status --all",
+    "page": "~/status/index.html",
+    "projectRefresh": "cd {root} && ~/bin/render-status --project ."
+  }
+}
+```
+
 ## 5. The Workbench tab
 
 If you run the Workbench dashboard (the server side of TeamAICoder), point the app at it: **Workbench → Set Workbench URL…** in the menu bar. A **Workbench** tab appears at the end of the top bar and shows the dashboard.

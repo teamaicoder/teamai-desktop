@@ -11,6 +11,7 @@ const {
   FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
   importProjects,
   parseOpenRequest,
+  parseRenderedPage, fillProjectCommand, outputTail,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('./main/handlers');
@@ -276,6 +277,53 @@ ipcMain.handle('projects:import', async (event, { portfolioDir, workspaceRoot, e
   const projects = importProjects({ portfolioDir, workspaceRoot, existing });
   console.log(`[main] projects:import ${projects.length} projects from ${portfolioDir}`);
   return { portfolioDir, workspaceRoot, projects };
+});
+
+// ── Section home: status board refresh ────────────────────────────────────────
+// Runs a section's configured refresh command (from prefs on disk, never from
+// the renderer) in the user's login shell. One run at a time per section/mode/
+// project: a second request while one runs gets the same result.
+const HOME_TIMEOUT_MS = 90 * 1000;
+const homeRuns = new Map();
+
+function runShell(command, cwd) {
+  const shell = process.env.SHELL || '/bin/sh';
+  return new Promise(resolve => {
+    execFile(shell, ['-lc', command], { cwd, timeout: HOME_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
+      (err, stdout, stderr) => resolve({
+        code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
+        timedOut: !!(err && err.killed),
+        stdout: stdout || '', stderr: stderr || '',
+      }));
+  });
+}
+
+async function refreshHome(section, mode, root) {
+  const cfg = loadPrefs(prefsPath).sectionHome[section];
+  if (!cfg) return { ok: false, error: 'No status board is set for this section.' };
+  const project = mode === 'project';
+  const command = project ? (cfg.projectRefresh && root ? fillProjectCommand(cfg.projectRefresh, root) : null) : cfg.refresh;
+  if (project && !command) return { ok: false, error: cfg.projectRefresh ? 'No active project.' : 'No project command is set.' };
+  if (!command) return { ok: !!cfg.page, url: cfg.page, error: cfg.page ? null : 'No page is set.' };
+
+  const cwd = project ? root : os.homedir();
+  console.log(`[main] home:refresh ${section}/${mode} cwd="${cwd}"`);
+  const res = await runShell(command, fs.existsSync(cwd) ? cwd : os.homedir());
+  if (res.timedOut) return { ok: false, error: `The refresh command timed out after ${HOME_TIMEOUT_MS / 1000} s.` };
+  if (res.code !== 0) return { ok: false, error: outputTail(res.stderr) || outputTail(res.stdout) || `The refresh command failed (exit ${res.code}).` };
+  const url = project ? parseRenderedPage(res.stdout) : (cfg.page || parseRenderedPage(res.stdout));
+  if (!url) return { ok: false, error: 'The command finished but didn\'t print the path of the page it wrote.' };
+  return { ok: true, url, error: null };
+}
+
+ipcMain.handle('home:refresh', (_, { section, mode, root } = {}) => {
+  const key = `${section}:${mode}:${root || ''}`;
+  if (homeRuns.has(key)) return homeRuns.get(key);
+  const run = refreshHome(section, mode, root)
+    .catch(e => ({ ok: false, error: e.message }))
+    .finally(() => homeRuns.delete(key));
+  homeRuns.set(key, run);
+  return run;
 });
 
 // ── Git ───────────────────────────────────────────────────────────────────────
@@ -774,6 +822,13 @@ function addWorkbenchMenu() {
     submenu: [
       { id: 'workbench-set-url', label: 'Set Workbench URL…', click: () => sendToWindows('workbench:configure', {}) },
       { id: 'workbench-reload', label: 'Reload Workbench', click: () => workbenchView?.webContents.reload() },
+    ],
+  }));
+  menu.append(new MenuItem({
+    label: 'Plan & Track',
+    submenu: [
+      { id: 'home-plan-set', label: 'Set Status Board…', click: () => sendToWindows('home:configure', { section: 'plan' }) },
+      { id: 'home-plan-clear', label: 'Clear Status Board', click: () => sendToWindows('home:clear', { section: 'plan' }) },
     ],
   }));
   menu.append(new MenuItem({
