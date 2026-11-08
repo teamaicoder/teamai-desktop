@@ -63,7 +63,7 @@ The app follows Electron's standard two-process model with strict context isolat
 - The app runs with `NODE_ENV=test`, which disables the visible window (`show: false`), electron-reload, DevTools, and the single-instance lock. Playwright connects via CDP so no window ever appears on screen — tests can run without stealing focus.
 - `tests/ui/helpers/app.js` provides shared helpers:
   - `launchApp({ userData })` — launches the app with its own temp `userData` dir (so tests never touch real preferences) and waits for `init() complete`. Pass the returned `userData` back in to relaunch against the same preferences and sessions.
-  - `clickTabAddItem(win, itemText)` — hovers the `+` button and clicks a dropdown item (`'New File'` or `'New Browser'`).
+  - `clickTabAddItem(win, itemText)` — hovers the `+` button and clicks a dropdown item (`'New File'`, `'New Browser'`, `'New Terminal'` or `'New Chat + Preview'`).
   - `makeTempDir()` — creates a temp directory with `hello.md`, `data.json`, `script.js`, and `subdir/nested.md`. Returns `{ dir, cleanup }`.
   - `navigateSidebarTo(win, dir)` — calls `window._testNavigateTo(dir)` in the renderer to navigate the sidebar without a native dialog.
 - `window._testNavigateTo(dir)` is defined at the bottom of `renderer/app.js` and sets `state.rootDir` then calls `navigateTo(dir)`.
@@ -76,3 +76,4 @@ The app follows Electron's standard two-process model with strict context isolat
   - `markdown.test.js` — preview rendering, edit/preview toggle
   - `workbench.test.js` — Workbench tab: set/clear the URL from the menu, persistent session across restarts, external links open in the system browser, unreachable-URL error
   - `open-file.test.js` — files opened from Finder (macOS `open-file`): open rendered in Build, switch section, reuse the tab
+  - `preview.test.js` — browser tabs and the Chat + Preview split: sign-in cookie persists across restarts, Chrome user agent, sign-in popups on the same session, new-tab links, back/forward, divider drag and saved ratio, section switching

@@ -23,6 +23,11 @@ const IC = {
   trash:     `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,6 5,6 21,6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>`,
   newFile:   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>`,
   newFolder: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>`,
+  split:     `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="18" rx="2"/><line x1="10" y1="3" x2="10" y2="21"/><polyline points="4.5,9 6.5,11 4.5,13"/></svg>`,
+  back:      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15,18 9,12 15,6"/></svg>`,
+  forward:   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9,18 15,12 9,6"/></svg>`,
+  reload:    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23,4 23,10 17,10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`,
+  external:  `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15,3 21,3 21,9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`,
   browser:   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`,
 };
 
@@ -77,7 +82,7 @@ const state = {
   entries: [],
   tabs: [],        // { id, type, title, path?, fileType?, content?, editMode?, dirty?, ptyId? }
   activeTabId: null,
-  prefs: { starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null },
+  prefs: { starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4 },
   gitBranches: {}, // path → branch name
   gitScanGen: 0,
 };
@@ -109,7 +114,7 @@ function clearTabAddMenus(bar) {
   }
 }
 
-function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onOpen, onClose }) {
+function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewSplit, onOpen, onClose }) {
   const wrap = document.createElement('div');
   wrap.className = 'tab-add-wrap';
 
@@ -149,6 +154,9 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onOpen
   addItem(IC.browser,  'New Browser', () => Promise.resolve(onNewBrowser()).catch(err => console.error('[app] New Browser failed:', err)));
   if (onNewTerminal) {
     addItem(IC.terminal, 'New Terminal', () => Promise.resolve(onNewTerminal()).catch(err => console.error('[app] New Terminal failed:', err)));
+  }
+  if (onNewSplit) {
+    addItem(IC.split, 'New Chat + Preview', () => Promise.resolve(onNewSplit()).catch(err => console.error('[app] New Chat + Preview failed:', err)));
   }
 
   btn.addEventListener('click', e => {
@@ -514,7 +522,7 @@ function setActiveTab(id) {
     pane.classList.toggle('active', isActive);
     if (isActive) {
       const tab = state.tabs.find(t => t.id === id);
-      if (tab?.type === 'terminal') {
+      if (tab?.ptyId != null) {
         const ti = terminals.get(tab.ptyId);
         if (ti) requestAnimationFrame(() => ti.fitAddon.fit());
       }
@@ -523,7 +531,7 @@ function setActiveTab(id) {
 
   // Show the active browser view; hide all others
   for (const tab of state.tabs) {
-    if (tab.type !== 'browser') continue;
+    if (!tab.viewId) continue;
     if (tab.id === id) requestAnimationFrame(() => positionBrowserView(tab));
     else if (tab.viewId) window.api.browserHide(tab.viewId);
   }
@@ -531,20 +539,25 @@ function setActiveTab(id) {
   renderFileList();
 }
 
-function closeTab(id) {
-  const idx = state.tabs.findIndex(t => t.id === id);
-  if (idx < 0) return;
-
-  const tab = state.tabs[idx];
-  if (tab.type === 'terminal') {
+// A tab's terminal (ptyId) and native web view (viewId) — split tabs have both
+function disposeTabResources(tab) {
+  if (tab.ptyId != null) {
     window.api.ptyKill(tab.ptyId);
     const ti = terminals.get(tab.ptyId);
     if (ti) { try { ti.term.dispose(); } catch { } }
     terminals.delete(tab.ptyId);
-  } else if (tab.type === 'browser' && tab.viewId) {
+  }
+  if (tab.viewId) {
     window.api.browserHide(tab.viewId);
     window.api.browserDestroy(tab.viewId);
   }
+}
+
+function closeTab(id) {
+  const idx = state.tabs.findIndex(t => t.id === id);
+  if (idx < 0) return;
+
+  disposeTabResources(state.tabs[idx]);
 
   const editor = toastEditorInstances.get(id);
   if (editor) { try { editor.destroy(); } catch { } toastEditorInstances.delete(id); }
@@ -583,14 +596,18 @@ function renderTabBar() {
     const isActive = tab.id === state.activeTabId;
     const isTerminal = tab.type === 'terminal';
     const isBrowser = tab.type === 'browser';
+    const isSplit = tab.type === 'split';
 
     const chip = document.createElement('div');
-    chip.className = `tab-chip${isActive ? ' active' : ''} ${isTerminal ? 'terminal-tab' : isBrowser ? 'browser-tab' : 'file-tab'}`;
+    chip.className = `tab-chip${isActive ? ' active' : ''} ${isSplit ? 'split-tab' : isTerminal ? 'terminal-tab' : isBrowser ? 'browser-tab' : 'file-tab'}`;
     chip.title = tab.path || tab.url || tab.title;
 
     const iconSpan = document.createElement('span');
     iconSpan.className = 'tab-icon';
-    if (isTerminal) {
+    if (isSplit) {
+      iconSpan.innerHTML = IC.split;
+      iconSpan.style.color = 'var(--color-primary)';
+    } else if (isTerminal) {
       iconSpan.innerHTML = IC.terminal;
       iconSpan.style.color = 'var(--color-terminal)';
     } else if (isBrowser) {
@@ -638,14 +655,15 @@ function renderTabBar() {
       console.log(`[app] New Terminal: spawning terminal cwd="${cwd}"`);
       openTerminalTab(cwd);
     },
+    onNewSplit: () => openSplitTab(state.currentDir || window.api.homedir()),
     onOpen: () => {
       // Hide native browser overlay so the dropdown renders on top
-      for (const t of state.tabs) { if (t.type === 'browser' && t.viewId) window.api.browserHide(t.viewId); }
+      for (const t of state.tabs) { if (t.viewId) window.api.browserHide(t.viewId); }
     },
     onClose: () => {
       // Restore the active browser view
       const active = state.tabs.find(t => t.id === state.activeTabId);
-      if (active?.type === 'browser') requestAnimationFrame(() => positionBrowserView(active));
+      if (active?.viewId) requestAnimationFrame(() => positionBrowserView(active));
     },
   }));
 }
@@ -684,6 +702,8 @@ function buildTabContent(pane, tab) {
     buildTerminalPane(pane, tab);
   } else if (tab.type === 'browser') {
     buildBrowserPane(pane, tab);
+  } else if (tab.type === 'split') {
+    buildSplitPane(pane, tab, { onTitleChange: renderTabBar, reposition: () => positionBrowserView(tab) });
   } else {
     buildFilePane(pane, tab);
   }
@@ -976,8 +996,11 @@ function buildImagePane(pane, toolbar, body, tab) {
 function buildTerminalPane(pane, tab) {
   pane.classList.add('terminal-pane');
   pane.innerHTML = '<div class="terminal-container"></div>';
-  const container = pane.querySelector('.terminal-container');
+  attachTerminal(pane.querySelector('.terminal-container'), tab.ptyId);
+}
 
+// Create an xterm.js terminal for a PTY inside container
+function attachTerminal(container, ptyId) {
   if (typeof Terminal === 'undefined') {
     container.innerHTML = '<div class="loading" style="color:#aaa">xterm.js not loaded — run: npm run setup</div>';
     return;
@@ -1004,11 +1027,11 @@ function buildTerminalPane(pane, tab) {
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
 
-  term.onData(data => window.api.ptyWrite(tab.ptyId, data));
-  term.onResize(({ cols, rows }) => window.api.ptyResize(tab.ptyId, cols, rows));
+  term.onData(data => window.api.ptyWrite(ptyId, data));
+  term.onResize(({ cols, rows }) => window.api.ptyResize(ptyId, cols, rows));
 
   // Store before open so setActiveTab's RAF can find it
-  terminals.set(tab.ptyId, { term, fitAddon });
+  terminals.set(ptyId, { term, fitAddon });
 
   // Defer open until the pane is visible — xterm requires the container to have
   // real dimensions when open() is called, so we must wait until setActiveTab
@@ -1016,7 +1039,7 @@ function buildTerminalPane(pane, tab) {
   requestAnimationFrame(() => {
     term.open(container);
     fitAddon.fit();
-    window.api.ptyResize(tab.ptyId, term.cols, term.rows);
+    window.api.ptyResize(ptyId, term.cols, term.rows);
     new ResizeObserver(() => fitAddon.fit()).observe(container);
   });
 }
@@ -1066,30 +1089,36 @@ async function openFileTab(entry) {
 }
 
 // ── Open terminal tab ─────────────────────────────────────────────────────────
-async function openTerminalTab(dir) {
-  // Fall back to homedir if the requested directory no longer exists (e.g. cleaned up temp dirs)
+// Spawn a PTY in dir, falling back to the home folder if dir no longer exists
+// (e.g. a cleaned-up temp dir). Returns { ptyId, cwd }, or null on failure.
+async function spawnPty(dir) {
   let cwd = dir || window.api.homedir();
-  console.log(`[app] openTerminalTab "${cwd}"`);
-  let ptyId;
   try {
-    ptyId = await window.api.ptySpawn(cwd);
+    const ptyId = await window.api.ptySpawn(cwd);
     console.log(`[app] ptySpawn → id=${ptyId}`);
+    return { ptyId, cwd };
   } catch (e) {
-    // First retry with homedir in case cwd no longer exists
-    if (cwd !== window.api.homedir()) {
-      try {
-        cwd = window.api.homedir();
-        ptyId = await window.api.ptySpawn(cwd);
-        console.log(`[app] ptySpawn fallback homedir → id=${ptyId}`);
-      } catch (e2) {
-        console.error('[app] ptySpawn failed:', e2.message);
-        return;
-      }
-    } else {
+    if (cwd === window.api.homedir()) {
       console.error('[app] ptySpawn failed:', e.message);
-      return;
+      return null;
+    }
+    try {
+      cwd = window.api.homedir();
+      const ptyId = await window.api.ptySpawn(cwd);
+      console.log(`[app] ptySpawn fallback homedir → id=${ptyId}`);
+      return { ptyId, cwd };
+    } catch (e2) {
+      console.error('[app] ptySpawn failed:', e2.message);
+      return null;
     }
   }
+}
+
+async function openTerminalTab(dir) {
+  console.log(`[app] openTerminalTab "${dir}"`);
+  const spawned = await spawnPty(dir);
+  if (!spawned) return;
+  const { ptyId, cwd } = spawned;
 
   const tab = {
     id: `terminal_${cwd}_${Date.now()}`,
@@ -1109,17 +1138,52 @@ async function openBrowserTab(initialUrl) {
   console.log('[app] openBrowserTab', initialUrl);
   const viewId = await window.api.browserCreate();
   console.log('[app] browserCreate → viewId=', viewId);
-  const id = `browser_${Date.now()}`;
-  const tab = {
-    id, type: 'browser', viewId,
-    title: initialUrl ? (() => { try { return new URL(initialUrl).hostname; } catch { return initialUrl; } })() : 'New Tab',
-    url: initialUrl,
-  };
+  const tab = newBrowserTab(`browser_${Date.now()}`, viewId, initialUrl);
   state.tabs.push(tab);
   syncTabContents();
   setActiveTab(tab.id);
   updatePanelVisibility();
   if (initialUrl) window.api.browserNavigate(viewId, initialUrl).catch(() => {});
+}
+
+function hostTitle(url) {
+  try { return new URL(url).hostname || url; } catch { return url; }
+}
+
+function newBrowserTab(id, viewId, url) {
+  return { id, type: 'browser', viewId, title: url ? hostTitle(url) : 'New Tab', url };
+}
+
+// A browser tab's title follows the page's host; a split tab keeps its own title
+function setTabUrl(tab, url) {
+  tab.url = url;
+  if (tab.type === 'browser') tab.title = hostTitle(url);
+}
+
+// ── Open Chat + Preview tab ───────────────────────────────────────────────────
+// A terminal (run `claude` in it) beside a preview browser, split by a divider.
+async function createSplitTab(idPrefix, dir) {
+  const spawned = await spawnPty(dir);
+  if (!spawned) return null;
+  const viewId = await window.api.browserCreate();
+  console.log(`[app] split tab: pty=${spawned.ptyId} view=${viewId} cwd="${spawned.cwd}"`);
+  return {
+    id: `${idPrefix}split_${Date.now()}`,
+    type: 'split',
+    title: 'Chat + Preview',
+    ptyId: spawned.ptyId,
+    viewId,
+    url: '',
+  };
+}
+
+async function openSplitTab(dir) {
+  const tab = await createSplitTab('', dir);
+  if (!tab) return;
+  state.tabs.push(tab);
+  syncTabContents();
+  setActiveTab(tab.id);
+  updatePanelVisibility();
 }
 
 // ── Browser pane ──────────────────────────────────────────────────────────────
@@ -1130,15 +1194,33 @@ function buildBrowserPane(pane, tab, onTitleChange = renderTabBar) {
 
   const toolbar = document.createElement('div');
   toolbar.className = 'viewer-toolbar browser-toolbar';
+  toolbar.dataset.viewId = tab.viewId;
   pane.appendChild(toolbar);
+
+  const navButton = (cls, icon, title, onClick) => {
+    const b = document.createElement('button');
+    b.className = `browser-nav-btn ${cls}`;
+    b.innerHTML = icon;
+    b.title = title;
+    b.addEventListener('click', onClick);
+    toolbar.appendChild(b);
+    return b;
+  };
+  const back = navButton('browser-back', IC.back, 'Back', () => window.api.browserBack(tab.viewId));
+  const forward = navButton('browser-forward', IC.forward, 'Forward', () => window.api.browserForward(tab.viewId));
+  navButton('browser-reload', IC.reload, 'Reload', () => window.api.browserReload(tab.viewId));
+  back.disabled = true;
+  forward.disabled = true;
 
   const urlInput = document.createElement('input');
   urlInput.type = 'text';
   urlInput.className = 'browser-url-input';
   urlInput.value = tab.url || '';
-  urlInput.placeholder = 'https://localhost:3000';
+  urlInput.placeholder = 'Enter a URL — a SharePoint or Google Docs link, or https://localhost:3000';
   urlInput.spellcheck = false;
   toolbar.appendChild(urlInput);
+
+  navButton('browser-external', IC.external, 'Open in system browser', () => window.api.browserOpenExternal(tab.viewId));
 
   // Transparent placeholder — its bounding rect tells the main process where to position the view
   const placeholder = document.createElement('div');
@@ -1149,8 +1231,7 @@ function buildBrowserPane(pane, tab, onTitleChange = renderTabBar) {
     let url = raw.trim();
     if (!url) return;
     if (!/^[a-z][a-z0-9+\-.]*:\/\//i.test(url)) url = 'https://' + url;
-    try { tab.title = new URL(url).hostname; } catch { tab.title = url; }
-    tab.url = url;
+    setTabUrl(tab, url);
     urlInput.value = url;
     onTitleChange();
     if (tab.viewId) window.api.browserNavigate(tab.viewId, url).catch(() => {});
@@ -1159,12 +1240,70 @@ function buildBrowserPane(pane, tab, onTitleChange = renderTabBar) {
   urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') navigate(urlInput.value); });
   urlInput.addEventListener('focus', () => urlInput.select());
 
-  if (!tab.url) requestAnimationFrame(() => urlInput.focus());
+  if (!tab.url && tab.type === 'browser') requestAnimationFrame(() => urlInput.focus());
+}
+
+// Reflect a navigation in the tab's toolbar (URL field, back/forward state)
+function updateBrowserToolbar(viewId, { url, canGoBack, canGoForward }) {
+  const toolbar = document.querySelector(`.browser-toolbar[data-view-id="${viewId}"]`);
+  if (!toolbar) return;
+  const input = toolbar.querySelector('.browser-url-input');
+  if (input && url && document.activeElement !== input) input.value = url;
+  if (typeof canGoBack === 'boolean') toolbar.querySelector('.browser-back').disabled = !canGoBack;
+  if (typeof canGoForward === 'boolean') toolbar.querySelector('.browser-forward').disabled = !canGoForward;
+}
+
+// ── Chat + Preview pane ───────────────────────────────────────────────────────
+// Left: the tab's terminal. Right: a browser pane whose placeholder positions
+// the native view. Dragging the divider resizes both; the native view is hidden
+// while dragging (it would swallow the mouse events) and shown at the end.
+function buildSplitPane(pane, tab, { onTitleChange, reposition }) {
+  pane.classList.add('split-pane');
+  pane.innerHTML = `
+    <div class="split-chat"><div class="terminal-container"></div></div>
+    <div class="split-divider" title="Drag to resize"></div>
+    <div class="split-preview"></div>`;
+  const chat = pane.querySelector('.split-chat');
+  const divider = pane.querySelector('.split-divider');
+  const setRatio = ratio => { chat.style.flexBasis = `${(ratio * 100).toFixed(2)}%`; };
+  setRatio(state.prefs.splitRatio ?? 0.4);
+
+  attachTerminal(chat.querySelector('.terminal-container'), tab.ptyId);
+  buildBrowserPane(pane.querySelector('.split-preview'), tab, onTitleChange);
+
+  divider.addEventListener('mousedown', e => {
+    e.preventDefault();
+    let ratio = state.prefs.splitRatio ?? 0.4;
+    window.api.browserHide(tab.viewId);
+    divider.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMove = ev => {
+      const r = pane.getBoundingClientRect();
+      if (r.width < 1) return;
+      ratio = Math.min(0.85, Math.max(0.15, (ev.clientX - r.left) / r.width));
+      setRatio(ratio);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      divider.classList.remove('dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      terminals.get(tab.ptyId)?.fitAddon.fit();
+      reposition();
+      state.prefs.splitRatio = ratio;
+      savePrefs();
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
 }
 
 // ── Position a browser view over its placeholder ───────────────────────────
 function positionBrowserView(tab) {
-  if (tab?.type !== 'browser' || !tab.viewId) return;
+  if (!tab?.viewId) return;
   const pane = findTabPane(tab.id);
   if (!pane || !pane.classList.contains('active')) return;
   const placeholder = pane.querySelector('.browser-placeholder');
@@ -1633,15 +1772,19 @@ class FileBrowserSection {
       pane.classList.toggle('active', pane.dataset.tabId === id);
     });
     for (const tab of this.s.tabs) {
-      if (tab.type !== 'browser') continue;
+      if (tab.id === id && tab.ptyId != null) {
+        const ti = terminals.get(tab.ptyId);
+        if (ti) requestAnimationFrame(() => ti.fitAddon.fit());
+      }
+      if (!tab.viewId) continue;
       if (tab.id === id) requestAnimationFrame(() => this._positionBrowserView(tab));
-      else if (tab.viewId) window.api.browserHide(tab.viewId);
+      else window.api.browserHide(tab.viewId);
     }
     this.renderFileList();
   }
 
   _positionBrowserView(tab) {
-    if (tab?.type !== 'browser' || !tab.viewId) return;
+    if (!tab?.viewId) return;
     const content = this.el('tab-content');
     if (!content) return;
     const pane = content.querySelector(`.tab-pane[data-tab-id="${tab.id}"]`) ||
@@ -1659,10 +1802,7 @@ class FileBrowserSection {
     if (idx < 0) return;
     const tab = this.s.tabs[idx];
     if (tab.path) window.api.unwatchFile(tab.path);
-    if (tab.type === 'browser' && tab.viewId) {
-      window.api.browserHide(tab.viewId);
-      window.api.browserDestroy(tab.viewId);
-    }
+    disposeTabResources(tab);
     const editor = toastEditorInstances.get(id);
     if (editor) { try { editor.destroy(); } catch { } toastEditorInstances.delete(id); }
     cmInstances.delete(id);
@@ -1701,13 +1841,17 @@ class FileBrowserSection {
     for (const tab of this.s.tabs) {
       const isActive = tab.id === this.s.activeTabId;
       const isBrowser = tab.type === 'browser';
+      const isSplit = tab.type === 'split';
       const chip = document.createElement('div');
-      chip.className = `tab-chip${isActive ? ' active' : ''} ${isBrowser ? 'browser-tab' : 'file-tab'}`;
+      chip.className = `tab-chip${isActive ? ' active' : ''} ${isSplit ? 'split-tab' : isBrowser ? 'browser-tab' : 'file-tab'}`;
       chip.title = tab.path || tab.url || tab.title;
 
       const iconSpan = document.createElement('span');
       iconSpan.className = 'tab-icon';
-      if (isBrowser) {
+      if (isSplit) {
+        iconSpan.innerHTML = IC.split;
+        iconSpan.style.color = 'var(--color-primary)';
+      } else if (isBrowser) {
         iconSpan.innerHTML = IC.browser;
         iconSpan.style.color = 'var(--color-primary)';
       } else {
@@ -1743,13 +1887,14 @@ class FileBrowserSection {
         this.openFileTab({ path: picked, name: window.api.basename(picked) });
       },
       onNewBrowser: () => this.openBrowserTab(''),
+      onNewSplit: () => this.openSplitTab(),
       // FBS sections have a built-in bottom terminal panel — no tab terminal needed
       onOpen: () => {
-        for (const t of this.s.tabs) { if (t.type === 'browser' && t.viewId) window.api.browserHide(t.viewId); }
+        for (const t of this.s.tabs) { if (t.viewId) window.api.browserHide(t.viewId); }
       },
       onClose: () => {
         const active = this.s.tabs.find(t => t.id === this.s.activeTabId);
-        if (active?.type === 'browser') requestAnimationFrame(() => this._positionBrowserView(active));
+        if (active?.viewId) requestAnimationFrame(() => this._positionBrowserView(active));
       },
     }));
   }
@@ -1772,6 +1917,7 @@ class FileBrowserSection {
         pane.dataset.tabId = tab.id;
         container.appendChild(pane);
         if (tab.type === 'browser') buildBrowserPane(pane, tab, () => this.renderTabBar());
+        else if (tab.type === 'split') buildSplitPane(pane, tab, { onTitleChange: () => this.renderTabBar(), reposition: () => this._positionBrowserView(tab) });
         else buildFilePane(pane, tab);
       }
     }
@@ -1779,17 +1925,21 @@ class FileBrowserSection {
 
   async openBrowserTab(initialUrl) {
     const viewId = await window.api.browserCreate();
-    const id = `${this.prefix}browser_${Date.now()}`;
-    const tab = {
-      id, type: 'browser', viewId,
-      title: initialUrl ? (() => { try { return new URL(initialUrl).hostname; } catch { return initialUrl; } })() : 'New Tab',
-      url: initialUrl,
-    };
+    const tab = newBrowserTab(`${this.prefix}browser_${Date.now()}`, viewId, initialUrl);
     this.s.tabs.push(tab);
     this.syncTabContents();
-    this.setActiveTab(id);
+    this.setActiveTab(tab.id);
     this.updatePanelVisibility();
     if (initialUrl) window.api.browserNavigate(viewId, initialUrl).catch(() => {});
+  }
+
+  async openSplitTab() {
+    const tab = await createSplitTab(this.prefix, this.s.currentDir);
+    if (!tab) return;
+    this.s.tabs.push(tab);
+    this.syncTabContents();
+    this.setActiveTab(tab.id);
+    this.updatePanelVisibility();
   }
 
   async openFileTab(entry) {
@@ -1969,7 +2119,11 @@ class FileBrowserSection {
       if (ti) requestAnimationFrame(() => ti.fitAddon.fit());
     }
     const active = this.s.tabs.find(t => t.id === this.s.activeTabId);
-    if (active?.type === 'browser') requestAnimationFrame(() => this._positionBrowserView(active));
+    if (active?.ptyId != null) {
+      const ti = terminals.get(active.ptyId);
+      if (ti) requestAnimationFrame(() => ti.fitAddon.fit());
+    }
+    if (active?.viewId) requestAnimationFrame(() => this._positionBrowserView(active));
   }
 }
 
@@ -1982,6 +2136,17 @@ const SECTIONS = Object.fromEntries([
   ['deploy',  'Deploy'],
   ['operate', 'Operate'],
 ].map(([id, label]) => [id, new FileBrowserSection(id, label)]));
+
+// The tab that owns a native web view, with its tab system's bar and opener
+function findViewOwner(viewId) {
+  const buildTab = state.tabs.find(t => t.viewId === viewId);
+  if (buildTab) return { tab: buildTab, renderTabBar, openBrowserTab };
+  for (const sec of Object.values(SECTIONS)) {
+    const tab = sec.s.tabs.find(t => t.viewId === viewId);
+    if (tab) return { tab, renderTabBar: () => sec.renderTabBar(), openBrowserTab: url => sec.openBrowserTab(url) };
+  }
+  return null;
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
@@ -2027,28 +2192,31 @@ async function init() {
   });
 
   // Browser view navigation events from main process
-  window.api.onBrowserEvent(({ id: viewId, type, url, title }) => {
-    const tab = state.tabs.find(t => t.viewId === viewId);
-    if (!tab) return;
+  // (Build tabs or any section's tabs — each owner has its own tab bar and opener)
+  window.api.onBrowserEvent(event => {
+    const { id: viewId, type, url, title } = event;
+    const owner = findViewOwner(viewId);
+    if (!owner) return;
+    const { tab } = owner;
     if (type === 'navigate' && url) {
-      tab.url = url;
-      try { tab.title = new URL(url).hostname; } catch { tab.title = url; }
-      const pane = findTabPane(tab.id);
-      if (pane) { const inp = pane.querySelector('.browser-url-input'); if (inp) inp.value = url; }
-      renderTabBar();
-    } else if (type === 'title' && title && !tab.url) {
+      setTabUrl(tab, url);
+      updateBrowserToolbar(viewId, event);
+      owner.renderTabBar();
+    } else if (type === 'title' && title && !tab.url && tab.type === 'browser') {
       tab.title = title;
-      renderTabBar();
+      owner.renderTabBar();
+    } else if (type === 'open-tab' && url) {
+      owner.openBrowserTab(url);
     }
   });
 
   // Reposition browser views on window resize (Build section + all FBS sections)
   window.addEventListener('resize', () => {
     const active = state.tabs.find(t => t.id === state.activeTabId);
-    if (active?.type === 'browser') positionBrowserView(active);
+    if (active?.viewId) positionBrowserView(active);
     for (const sec of Object.values(SECTIONS)) {
       const secActive = sec.s.tabs.find(t => t.id === sec.s.activeTabId);
-      if (secActive?.type === 'browser') sec._positionBrowserView(secActive);
+      if (secActive?.viewId) sec._positionBrowserView(secActive);
     }
   });
 
@@ -2218,23 +2386,23 @@ function initTopNav() {
       if (section === 'build') {
         // Re-fit terminal, reposition browser view
         const active = state.tabs.find(t => t.id === state.activeTabId);
-        if (active?.type === 'terminal') {
+        if (active?.ptyId != null) {
           const ti = terminals.get(active.ptyId);
           if (ti) requestAnimationFrame(() => ti.fitAddon.fit());
         }
-        if (active?.type === 'browser') requestAnimationFrame(() => positionBrowserView(active));
+        if (active?.viewId) requestAnimationFrame(() => positionBrowserView(active));
         // Hide browser views belonging to FBS sections
         for (const s of Object.values(SECTIONS)) {
-          for (const t of s.s.tabs) { if (t.type === 'browser' && t.viewId) window.api.browserHide(t.viewId); }
+          for (const t of s.s.tabs) { if (t.viewId) window.api.browserHide(t.viewId); }
         }
       } else {
         // Hide build browser views when leaving Build
-        for (const t of state.tabs) { if (t.type === 'browser' && t.viewId) window.api.browserHide(t.viewId); }
+        for (const t of state.tabs) { if (t.viewId) window.api.browserHide(t.viewId); }
       }
 
       if (section === 'workbench') {
         for (const s of Object.values(SECTIONS)) {
-          for (const t of s.s.tabs) { if (t.type === 'browser' && t.viewId) window.api.browserHide(t.viewId); }
+          for (const t of s.s.tabs) { if (t.viewId) window.api.browserHide(t.viewId); }
         }
       }
       positionWorkbench();
