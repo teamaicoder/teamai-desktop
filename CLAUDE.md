@@ -36,7 +36,7 @@ The app follows Electron's standard two-process model with strict context isolat
 - `main/handlers.js` — pure Node functions for fs, prefs, git (`exec git rev-parse`), and PTY lifecycle. Designed to be injectable for tests (no Electron imports; `nodePty` and `ptys` are passed in explicitly).
 
 **Preload** (`preload.js`)
-- Exposes `window.api` to the renderer via `contextBridge`. This is the only bridge between the sandboxed renderer and Node. All calls go through IPC channels prefixed by domain: `fs:*`, `prefs:*`, `git:*`, `pty:*`, `md:*`, `dialog:*`, `browser:*`, `workbench:*`.
+- Exposes `window.api` to the renderer via `contextBridge`. This is the only bridge between the sandboxed renderer and Node. All calls go through IPC channels prefixed by domain: `fs:*`, `prefs:*`, `git:*`, `pty:*`, `md:*`, `dialog:*`, `browser:*`, `workbench:*`, `projects:*`.
 - Markdown rendering (`marked`) runs in the main process and is called via `md:render` IPC — it never runs in the renderer.
 
 **Renderer** (`renderer/`)
@@ -77,3 +77,4 @@ The app follows Electron's standard two-process model with strict context isolat
   - `workbench.test.js` — Workbench tab: set/clear the URL from the menu, persistent session across restarts, external links open in the system browser, unreachable-URL error
   - `open-file.test.js` — files opened from Finder (macOS `open-file`): open rendered in Build, switch section, reuse the tab
   - `preview.test.js` — browser tabs and the Chat + Preview split: sign-in cookie persists across restarts, Chrome user agent, sign-in popups on the same session, new-tab links, back/forward, divider drag and saved ratio, section switching
+  - `projects.test.js` — projects: import a fixture portfolio, the switcher with phase/health chips, choosing a project (Build repo list, missing repos greyed, sections at the project folder), Re-import from the menu, active project kept across restarts

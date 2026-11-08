@@ -9,6 +9,7 @@ const {
   loadPrefs, savePrefs, normalizeWorkbenchUrl,
   chromeUserAgent, windowOpenTarget,
   FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
+  importProjects,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('./main/handlers');
@@ -178,6 +179,45 @@ ipcMain.handle('prefs:save', (_, data) => {
   console.log('[main] prefs:save', JSON.stringify(data));
   try { savePrefs(prefsPath, data); }
   catch (e) { console.error('[main] prefs:save failed:', e.message); }
+});
+
+// ── Projects ──────────────────────────────────────────────────────────────────
+
+// Where project checkouts are looked for when none has been chosen
+function defaultWorkspaceRoot() {
+  const home = app.getPath('home');
+  const workspace = path.join(home, 'workspace');
+  return fs.existsSync(workspace) ? workspace : home;
+}
+
+// Import projects from a portfolio. With pick (or nothing remembered) the user
+// chooses the portfolio folder, and on first import the workspace folder too.
+// Returns { portfolioDir, workspaceRoot, projects } or null when cancelled.
+ipcMain.handle('projects:import', async (event, { portfolioDir, workspaceRoot, existing, pick } = {}) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (pick || !portfolioDir) {
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Choose your portfolio folder',
+      message: 'The folder of project files (<slug>.md), or the repo that contains portfolio/',
+      defaultPath: portfolioDir || defaultWorkspaceRoot(),
+      properties: ['openDirectory'],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    portfolioDir = res.filePaths[0];
+  }
+  if (!workspaceRoot) {
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Choose your workspace folder',
+      message: 'The folder your project checkouts live under',
+      defaultPath: defaultWorkspaceRoot(),
+      properties: ['openDirectory'],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    workspaceRoot = res.filePaths[0];
+  }
+  const projects = importProjects({ portfolioDir, workspaceRoot, existing });
+  console.log(`[main] projects:import ${projects.length} projects from ${portfolioDir}`);
+  return { portfolioDir, workspaceRoot, projects };
 });
 
 // ── Git ───────────────────────────────────────────────────────────────────────
@@ -589,6 +629,13 @@ function addWorkbenchMenu() {
     submenu: [
       { id: 'workbench-set-url', label: 'Set Workbench URL…', click: () => sendToWindows('workbench:configure', {}) },
       { id: 'workbench-reload', label: 'Reload Workbench', click: () => workbenchView?.webContents.reload() },
+    ],
+  }));
+  menu.append(new MenuItem({
+    label: 'Projects',
+    submenu: [
+      { id: 'projects-import', label: 'Import from Portfolio…', click: () => sendToWindows('projects:command', { type: 'import' }) },
+      { id: 'projects-reimport', label: 'Re-import Projects', click: () => sendToWindows('projects:command', { type: 'reimport' }) },
     ],
   }));
   Menu.setApplicationMenu(menu);

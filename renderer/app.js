@@ -82,7 +82,10 @@ const state = {
   entries: [],
   tabs: [],        // { id, type, title, path?, fileType?, content?, editMode?, dirty?, ptyId? }
   activeTabId: null,
-  prefs: { starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4 },
+  prefs: {
+    starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4,
+    projects: [], activeProject: null, portfolioDir: null, workspaceRoot: null,
+  },
   gitBranches: {}, // path → branch name
   gitScanGen: 0,
 };
@@ -324,6 +327,7 @@ function renderStarredSection() {
   const sec = document.getElementById('starred-section');
   const starred = state.prefs.starredFolders;
   sec.innerHTML = '';
+  renderProjectRepos(sec);
 
   if (starred.length === 0) return;
 
@@ -1475,6 +1479,17 @@ class FileBrowserSection {
 
   getStarredFolder() { return this._getPrefs().folder ?? null; }
 
+  // Point this section at a folder (a project's root): now if it's open,
+  // otherwise when it's first visited
+  setRoot(dir) {
+    if (this.s.initialized) {
+      this.s.rootDir = dir;
+      this.navigateTo(dir);
+    } else {
+      this._pendingRoot = dir;
+    }
+  }
+
   async toggleStar(path) {
     const p = this._getPrefs();
     p.folder = p.folder === path ? null : path;
@@ -2104,7 +2119,8 @@ class FileBrowserSection {
     this.s.initialized = true;
     this.buildDOM();
     const p = this._getPrefs();
-    const startDir = p.folder || p.lastFolder || window.api.homedir();
+    const startDir = this._pendingRoot || p.folder || p.lastFolder || window.api.homedir();
+    this._pendingRoot = null;
     this.s.rootDir = startDir;
     await this.navigateTo(startDir);
     this.renderTabBar();
@@ -2242,6 +2258,7 @@ async function init() {
   renderTabBar();
   updatePanelVisibility();
   initWorkbench();
+  initProjects();
   window.api.onOpenFile(({ filePath }) => openFileFromFinder(filePath));
   for (const filePath of await window.api.appReady()) openFileFromFinder(filePath);
   console.log('[app] init() complete');
@@ -2252,6 +2269,8 @@ window._testNavigateTo = async (dir) => {
   state.rootDir = dir;
   await navigateTo(dir);
 };
+
+window._testImportProjects = (portfolioDir, workspaceRoot) => runProjectImport({ portfolioDir, workspaceRoot });
 
 // Global safety nets — surface any unhandled promise rejections or JS errors
 window.addEventListener('unhandledrejection', e => {
@@ -2370,6 +2389,174 @@ function initWorkbench() {
   document.getElementById('workbench-retry').addEventListener('click', loadWorkbench);
   window.addEventListener('resize', positionWorkbench);
   applyWorkbenchUrl();
+}
+
+// ── Projects ──────────────────────────────────────────────────────────────
+// Projects are imported from a portfolio (Projects → Import from Portfolio…)
+// and kept in preferences. Choosing one points Build and every section at the
+// project's folder, and lists its repos at the top of the Build sidebar.
+const projectMenu = { open: false };
+
+function activeProject() {
+  return state.prefs.projects.find(p => p.slug === state.prefs.activeProject) || null;
+}
+
+const HEALTH_LABEL = { green: 'On track', amber: 'At risk', red: 'Off track' };
+
+function projectChips(p) {
+  const health = ['green', 'amber', 'red'].includes(p.health) ? p.health : 'unknown';
+  const dot = `<span class="project-health ${health}" title="${esc(HEALTH_LABEL[health] || 'Health not set')}"></span>`;
+  const phase = p.phase ? `<span class="project-phase">${esc(p.phase)}</span>` : '';
+  return dot + phase;
+}
+
+function renderProjectSwitcher() {
+  const el = document.getElementById('project-switcher');
+  if (!el) return;
+  const p = activeProject();
+  el.innerHTML = p
+    ? `${projectChips(p)}<span class="project-switcher-title">${esc(p.title)}</span>${IC.chevron}`
+    : `<span class="project-switcher-title">${state.prefs.projects.length ? 'Choose project' : 'Projects'}</span>${IC.chevron}`;
+  el.title = p ? (p.oneLiner || p.title) : 'Choose or import a project';
+}
+
+// Native web views sit above the page, so hide them while the menu is open
+function hideNativeViews() {
+  for (const t of state.tabs) if (t.viewId) window.api.browserHide(t.viewId);
+  for (const sec of Object.values(SECTIONS)) for (const t of sec.s.tabs) if (t.viewId) window.api.browserHide(t.viewId);
+  window.api.workbenchHide();
+}
+
+function restoreNativeViews() {
+  const section = document.querySelector('.nav-tab.active')?.dataset.section;
+  if (section === 'build') {
+    const active = state.tabs.find(t => t.id === state.activeTabId);
+    if (active?.viewId) positionBrowserView(active);
+  } else if (SECTIONS[section]) {
+    const sec = SECTIONS[section];
+    const active = sec.s.tabs.find(t => t.id === sec.s.activeTabId);
+    if (active?.viewId) sec._positionBrowserView(active);
+  }
+  positionWorkbench();
+}
+
+function closeProjectMenu() {
+  document.getElementById('project-menu')?.remove();
+  if (!projectMenu.open) return;
+  projectMenu.open = false;
+  restoreNativeViews();
+}
+
+function openProjectMenu() {
+  if (projectMenu.open) { closeProjectMenu(); return; }
+  projectMenu.open = true;
+  hideNativeViews();
+
+  const menu = document.createElement('div');
+  menu.id = 'project-menu';
+  menu.className = 'project-menu';
+  for (const p of state.prefs.projects) {
+    const item = document.createElement('button');
+    item.className = `project-menu-item${p.slug === state.prefs.activeProject ? ' active' : ''}`;
+    item.dataset.slug = p.slug;
+    item.disabled = !p.root;
+    item.title = p.root ? p.root : 'No local folder found for this project';
+    item.innerHTML = `${projectChips(p)}<span class="project-menu-title">${esc(p.title)}</span>`;
+    item.onclick = () => { closeProjectMenu(); selectProject(p.slug); };
+    menu.appendChild(item);
+  }
+  if (state.prefs.projects.length) {
+    const sep = document.createElement('div');
+    sep.className = 'project-menu-sep';
+    menu.appendChild(sep);
+  }
+  const actions = [['Import from Portfolio…', () => runProjectImport({ pick: true })]];
+  if (state.prefs.portfolioDir) actions.push(['Re-import projects', () => runProjectImport({})]);
+  if (activeProject() && state.currentDir) actions.push(['Use current folder as project folder', pinProjectRoot]);
+  for (const [label, fn] of actions) {
+    const item = document.createElement('button');
+    item.className = 'project-menu-item action';
+    item.textContent = label;
+    item.onclick = () => { closeProjectMenu(); fn(); };
+    menu.appendChild(item);
+  }
+
+  const r = document.getElementById('project-switcher').getBoundingClientRect();
+  menu.style.left = `${r.left}px`;
+  menu.style.top = `${r.bottom + 2}px`;
+  document.body.appendChild(menu);
+}
+
+async function selectProject(slug) {
+  const p = state.prefs.projects.find(x => x.slug === slug);
+  if (!p || !p.root) return;
+  state.prefs.activeProject = slug;
+  state.rootDir = p.root;
+  await navigateTo(p.root);   // saves prefs
+  for (const sec of Object.values(SECTIONS)) sec.setRoot(p.root);
+  renderProjectSwitcher();
+}
+
+async function pinProjectRoot() {
+  const p = activeProject();
+  if (!p || !state.currentDir) return;
+  p.root = state.currentDir;
+  p.rootPinned = true;
+  await selectProject(p.slug);
+}
+
+async function runProjectImport({ pick = false, portfolioDir, workspaceRoot } = {}) {
+  const result = await window.api.projectsImport({
+    portfolioDir: portfolioDir ?? state.prefs.portfolioDir,
+    workspaceRoot: workspaceRoot ?? state.prefs.workspaceRoot,
+    existing: state.prefs.projects,
+    pick,
+  });
+  if (!result) return;
+  state.prefs.portfolioDir = result.portfolioDir;
+  state.prefs.workspaceRoot = result.workspaceRoot;
+  state.prefs.projects = result.projects;
+  if (!activeProject()) state.prefs.activeProject = null;
+  await savePrefs();
+  renderProjectSwitcher();
+  renderStarredSection();
+}
+
+// The active project's folder and repos, at the top of the Build sidebar
+function renderProjectRepos(container) {
+  const p = activeProject();
+  if (!p) return;
+  const label = document.createElement('div');
+  label.className = 'starred-label';
+  label.textContent = `Project · ${p.title}`;
+  container.appendChild(label);
+
+  const rows = [{ name: window.api.basename(p.root), path: p.root, isRoot: true }]
+    .concat(p.repos.map(r => ({ name: r.repo.split('/')[1], path: r.path, repo: r.repo })));
+  for (const r of rows) {
+    if (!r.isRoot && r.path === p.root) continue;
+    const row = document.createElement('div');
+    row.className = `starred-row project-repo${r.path ? '' : ' missing'}${r.path && state.currentDir === r.path ? ' active' : ''}`;
+    row.title = r.path || `Not checked out in your workspace folder: ${r.repo}`;
+    row.innerHTML = `<span class="project-repo-icon">${r.isRoot ? IC.folderOpen : IC.folder}</span>
+      <span class="starred-row-name">${esc(r.name)}</span>`;
+    if (r.path) row.onclick = () => { state.rootDir = p.root; navigateTo(r.path); };
+    container.appendChild(row);
+  }
+  const div = document.createElement('div');
+  div.className = 'starred-divider';
+  container.appendChild(div);
+}
+
+function initProjects() {
+  const btn = document.getElementById('project-switcher');
+  btn.addEventListener('click', openProjectMenu);
+  document.addEventListener('mousedown', e => {
+    if (projectMenu.open && !e.target.closest('#project-menu') && !e.target.closest('#project-switcher')) closeProjectMenu();
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && projectMenu.open) closeProjectMenu(); });
+  window.api.onProjectsCommand(({ type }) => runProjectImport({ pick: type === 'import' }));
+  renderProjectSwitcher();
 }
 
 // ── Top-level navigation ──────────────────────────────────────────────────

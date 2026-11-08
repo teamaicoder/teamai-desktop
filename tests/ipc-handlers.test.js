@@ -9,6 +9,8 @@ const {
   loadPrefs, savePrefs, normalizeWorkbenchUrl, normalizeSplitRatio,
   chromeUserAgent, windowOpenTarget,
   SIGN_IN_FIREFOX_UA, FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
+  parseFrontmatter, normalizeRepo, readPortfolio, originUrl, scanWorkspace,
+  projectRoot, resolveProjects, mergeProjects, importProjects,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('../main/handlers');
@@ -317,6 +319,9 @@ describe('windowOpenTarget', () => {
 
 // ── loadPrefs ─────────────────────────────────────────────────────────────────
 
+// Project fields every loaded prefs object has
+const NO_PROJECTS = { projects: [], activeProject: null, portfolioDir: null, workspaceRoot: null };
+
 describe('loadPrefs', () => {
   let tmp;
   beforeEach(() => { tmp = mkTmp(); });
@@ -324,25 +329,25 @@ describe('loadPrefs', () => {
 
   test('returns defaults when file does not exist', () => {
     const p = path.join(tmp, 'prefs.json');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4 });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4, ...NO_PROJECTS });
   });
 
   test('parses starredFolders and lastOpenFolder correctly', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, JSON.stringify({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a' }));
-    expect(loadPrefs(p)).toEqual({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a', sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4 });
+    expect(loadPrefs(p)).toEqual({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a', sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4, ...NO_PROJECTS });
   });
 
   test('returns defaults for corrupt JSON', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, 'not valid json {{{{');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4 });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4, ...NO_PROJECTS });
   });
 
   test('returns defaults for an empty file', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, '');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4 });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4, ...NO_PROJECTS });
   });
 
   test('keeps a valid workbenchUrl and drops an invalid one', () => {
@@ -398,14 +403,14 @@ describe('savePrefs', () => {
     const p = path.join(tmp, 'prefs.json');
     const data = { starredFolders: ['/a', '/b'], lastOpenFolder: '/b' };
     savePrefs(p, data);
-    expect(loadPrefs(p)).toEqual({ ...data, sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4 });
+    expect(loadPrefs(p)).toEqual({ ...data, sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4, ...NO_PROJECTS });
   });
 
   test('overwrites previous prefs on second save', () => {
     const p = path.join(tmp, 'prefs.json');
     savePrefs(p, { starredFolders: ['/old'], lastOpenFolder: '/old' });
     savePrefs(p, { starredFolders: [], lastOpenFolder: '/new' });
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: '/new', sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4 });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: '/new', sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4, ...NO_PROJECTS });
   });
 });
 
@@ -550,4 +555,239 @@ describe('PTY handlers', () => {
     );
     setTimeout(() => ptyKill(ptys, id), 200);
   }, 5000);
+});
+
+// ── Projects ──────────────────────────────────────────────────────────────────
+
+// A checkout whose origin remote points at owner/name
+function makeCheckout(dir, remote) {
+  fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.git', 'config'),
+    `[core]\n\tbare = false\n[remote "origin"]\n\turl = ${remote}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n`);
+}
+
+function writeProject(dir, name, frontmatter) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, name), `---\n${frontmatter}\n---\n\n# Notes\n`);
+}
+
+describe('parseFrontmatter', () => {
+  test('reads scalars and lists, stripping comments only from repo lines', () => {
+    const fm = parseFrontmatter([
+      '---',
+      'slug: alpha',
+      'title: "Alpha App"',
+      'phase: build',
+      'repos:',
+      '  - github.com/example-org/alpha-app  # PUBLIC — the app',
+      '  - github.com/example-org/alpha-infra# PRIVATE',
+      'readiness:',
+      '  vision: done',
+      'blockers:',
+      '  - Waiting on issue #12',
+      '---',
+      'body',
+    ].join('\n'));
+    expect(fm.slug).toBe('alpha');
+    expect(fm.title).toBe('Alpha App');
+    expect(fm.repos).toEqual(['github.com/example-org/alpha-app', 'github.com/example-org/alpha-infra']);
+    expect(fm.blockers).toEqual(['Waiting on issue #12']);
+  });
+
+  test('returns {} without frontmatter', () => {
+    expect(parseFrontmatter('# Just a heading')).toEqual({});
+  });
+});
+
+describe('normalizeRepo', () => {
+  test.each([
+    ['github.com/example-org/alpha', 'example-org/alpha'],
+    ['example-org/alpha', 'example-org/alpha'],
+    ['https://github.com/example-org/alpha.git', 'example-org/alpha'],
+    ['git@github.com:example-org/alpha.git', 'example-org/alpha'],
+    ['ssh://git@github.com/example-org/alpha', 'example-org/alpha'],
+    ['github.com/example-org/alpha/', 'example-org/alpha'],
+  ])('%s → %s', (input, expected) => {
+    expect(normalizeRepo(input)).toBe(expected);
+  });
+
+  test.each([
+    'The pinout is a provisional guess from photos',
+    'github.com/example-org/a, b, c',
+    'github.com/example-org',
+    '',
+    null,
+  ])('rejects %p', input => {
+    expect(normalizeRepo(input)).toBeNull();
+  });
+});
+
+describe('readPortfolio', () => {
+  let dir;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'portfolio-')); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test('reads project files from portfolio/ and skips the README and prose repo lines', () => {
+    const folder = path.join(dir, 'portfolio');
+    writeProject(folder, 'alpha.md', 'slug: alpha\ntitle: Alpha\none_liner: The first one\nphase: build\nhealth: green\nrepos:\n  - github.com/example-org/alpha-app\n  - Mechanicals came from photos, not a scan');
+    writeProject(folder, 'beta.md', 'title: Beta\nhealth: amber\nrepos:\n  - example-org/beta');
+    fs.writeFileSync(path.join(folder, 'README.md'), '# Portfolio\n');
+    const projects = readPortfolio(dir);
+    expect(projects).toEqual([
+      { slug: 'alpha', title: 'Alpha', oneLiner: 'The first one', phase: 'build', health: 'green', oss: '', repos: ['example-org/alpha-app'] },
+      { slug: 'beta', title: 'Beta', oneLiner: '', phase: '', health: 'amber', oss: '', repos: ['example-org/beta'] },
+    ]);
+  });
+
+  test('accepts the portfolio folder itself', () => {
+    writeProject(dir, 'gamma.md', 'slug: gamma\ntitle: Gamma\nrepos:\n  - example-org/gamma');
+    expect(readPortfolio(dir).map(p => p.slug)).toEqual(['gamma']);
+  });
+
+  test('missing folder → []', () => {
+    expect(readPortfolio(path.join(dir, 'nope'))).toEqual([]);
+  });
+});
+
+describe('originUrl', () => {
+  let dir;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'origin-')); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test('reads origin from .git/config', () => {
+    makeCheckout(dir, 'git@github.com:example-org/alpha.git');
+    expect(originUrl(dir)).toBe('git@github.com:example-org/alpha.git');
+  });
+
+  test('follows a .git file to a worktree common dir', () => {
+    const main = path.join(dir, 'main');
+    makeCheckout(main, 'https://github.com/example-org/alpha.git');
+    const wtGit = path.join(main, '.git', 'worktrees', 'wt');
+    fs.mkdirSync(wtGit, { recursive: true });
+    fs.writeFileSync(path.join(wtGit, 'commondir'), '../..\n');
+    const wt = path.join(dir, 'wt');
+    fs.mkdirSync(wt);
+    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${wtGit}\n`);
+    expect(originUrl(wt)).toBe('https://github.com/example-org/alpha.git');
+  });
+
+  test('no repo or no origin → null', () => {
+    expect(originUrl(dir)).toBeNull();
+    fs.mkdirSync(path.join(dir, '.git'));
+    fs.writeFileSync(path.join(dir, '.git', 'config'), '[core]\n\tbare = false\n');
+    expect(originUrl(dir)).toBeNull();
+  });
+});
+
+describe('scanWorkspace', () => {
+  let ws;
+  beforeEach(() => { ws = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-')); });
+  afterEach(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+  test('maps owner/name to checkouts, nested ones included, skipping hidden and dependency folders', () => {
+    makeCheckout(path.join(ws, 'alpha', 'app'), 'git@github.com:example-org/alpha-app.git');
+    makeCheckout(path.join(ws, 'alpha', 'app', 'web'), 'https://github.com/example-org/alpha-web.git');
+    makeCheckout(path.join(ws, 'beta'), 'https://github.com/example-org/beta');
+    makeCheckout(path.join(ws, 'beta', '.claude', 'worktrees', 'x'), 'https://github.com/example-org/hidden');
+    makeCheckout(path.join(ws, 'beta', 'node_modules', 'dep'), 'https://github.com/example-org/dep');
+    makeCheckout(path.join(ws, 'a', 'b', 'c', 'd', 'e'), 'https://github.com/example-org/too-deep');
+    expect(scanWorkspace(ws)).toEqual({
+      'example-org/alpha-app': path.join(ws, 'alpha', 'app'),
+      'example-org/alpha-web': path.join(ws, 'alpha', 'app', 'web'),
+      'example-org/beta': path.join(ws, 'beta'),
+    });
+  });
+
+  test('keeps the shallowest checkout of a repo', () => {
+    makeCheckout(path.join(ws, 'x', 'copy'), 'https://github.com/example-org/alpha');
+    makeCheckout(path.join(ws, 'alpha'), 'https://github.com/example-org/alpha');
+    expect(scanWorkspace(ws)['example-org/alpha']).toBe(path.join(ws, 'alpha'));
+  });
+});
+
+describe('projectRoot', () => {
+  let ws;
+  beforeEach(() => { ws = fs.mkdtempSync(path.join(os.tmpdir(), 'root-')); });
+  afterEach(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+  test('<workspace>/<slug> when it holds every checkout', () => {
+    fs.mkdirSync(path.join(ws, 'alpha', 'app'), { recursive: true });
+    expect(projectRoot('alpha', [path.join(ws, 'alpha', 'app')], ws)).toBe(path.join(ws, 'alpha'));
+  });
+
+  test('deepest common folder otherwise', () => {
+    const a = path.join(ws, 'group', 'one');
+    const b = path.join(ws, 'group', 'two');
+    expect(projectRoot('beta', [a, b], ws)).toBe(path.join(ws, 'group'));
+    expect(projectRoot('beta', [a], ws)).toBe(a);
+  });
+
+  test('never the workspace itself', () => {
+    expect(projectRoot('gamma', [path.join(ws, 'one'), path.join(ws, 'two')], ws)).toBeNull();
+    fs.mkdirSync(path.join(ws, 'gamma'));
+    expect(projectRoot('gamma', [path.join(ws, 'one'), path.join(ws, 'two')], ws)).toBe(path.join(ws, 'gamma'));
+  });
+
+  test('no checkouts: <workspace>/<slug> if it exists, else null', () => {
+    expect(projectRoot('delta', [], ws)).toBeNull();
+    fs.mkdirSync(path.join(ws, 'delta'));
+    expect(projectRoot('delta', [], ws)).toBe(path.join(ws, 'delta'));
+  });
+});
+
+describe('resolveProjects / mergeProjects / importProjects', () => {
+  let tmp, ws, portfolio;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'import-'));
+    ws = path.join(tmp, 'ws');
+    portfolio = path.join(tmp, 'specs', 'portfolio');
+    makeCheckout(path.join(ws, 'alpha', 'app'), 'git@github.com:example-org/alpha-app.git');
+    makeCheckout(path.join(ws, 'alpha', 'infra'), 'git@github.com:example-org/alpha-infra.git');
+    writeProject(portfolio, 'alpha.md', 'slug: alpha\ntitle: Alpha\nrepos:\n  - github.com/example-org/alpha-app\n  - github.com/example-org/alpha-infra\n  - github.com/example-org/alpha-docs');
+    writeProject(portfolio, 'beta.md', 'slug: beta\ntitle: Beta\nrepos:\n  - github.com/example-org/beta');
+  });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  test('matches repos to checkouts and flags missing ones', () => {
+    const [alpha, beta] = importProjects({ portfolioDir: path.join(tmp, 'specs'), workspaceRoot: ws, existing: [] });
+    expect(alpha.root).toBe(path.join(ws, 'alpha'));
+    expect(alpha.repos).toEqual([
+      { repo: 'example-org/alpha-app', path: path.join(ws, 'alpha', 'app') },
+      { repo: 'example-org/alpha-infra', path: path.join(ws, 'alpha', 'infra') },
+      { repo: 'example-org/alpha-docs', path: null },
+    ]);
+    expect(beta.root).toBeNull();
+    expect(beta.repos).toEqual([{ repo: 'example-org/beta', path: null }]);
+  });
+
+  test('re-import keeps a pinned folder and drops projects no longer in the portfolio', () => {
+    const existing = [
+      { slug: 'alpha', title: 'Old', repos: [], root: '/pinned/alpha', rootPinned: true },
+      { slug: 'gone', title: 'Gone', repos: [], root: '/x' },
+    ];
+    const merged = importProjects({ portfolioDir: portfolio, workspaceRoot: ws, existing });
+    expect(merged.map(p => p.slug)).toEqual(['alpha', 'beta']);
+    expect(merged[0]).toMatchObject({ title: 'Alpha', root: '/pinned/alpha', rootPinned: true });
+  });
+
+  test('mergeProjects without existing projects returns the import', () => {
+    const imported = resolveProjects([{ slug: 'z', title: 'Z', repos: [] }], {}, ws);
+    expect(mergeProjects(undefined, imported)).toEqual(imported);
+  });
+});
+
+describe('loadPrefs projects', () => {
+  test('keeps project fields and drops malformed projects', () => {
+    const p = path.join(os.tmpdir(), `prefs-projects-${Date.now()}.json`);
+    fs.writeFileSync(p, JSON.stringify({
+      projects: [{ slug: 'alpha', title: 'Alpha', repos: [] }, null, { title: 'no slug' }],
+      activeProject: 'alpha', portfolioDir: '/specs', workspaceRoot: '/ws',
+    }));
+    const prefs = loadPrefs(p);
+    fs.unlinkSync(p);
+    expect(prefs.projects).toEqual([{ slug: 'alpha', title: 'Alpha', repos: [] }]);
+    expect(prefs.activeProject).toBe('alpha');
+    expect(prefs.portfolioDir).toBe('/specs');
+    expect(prefs.workspaceRoot).toBe('/ws');
+  });
 });

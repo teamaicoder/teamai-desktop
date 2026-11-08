@@ -42,6 +42,28 @@ Each section has its own folder, file tree and tabs. None of the folders above i
 
 The app remembers each section's folder between launches.
 
+### Projects
+
+If you keep a portfolio, a folder with one markdown file per project, the app can import it. Each file starts with YAML frontmatter:
+
+```markdown
+---
+slug: my-app
+title: My App
+one_liner: What it is, in a sentence
+phase: build          # shown as a chip in the switcher
+health: green         # green, amber or red
+repos:
+  - github.com/my-org/my-app        # comments after '#' are ignored
+  - github.com/my-org/my-app-infra
+---
+```
+
+1. **Projects → Import from Portfolio…** in the menu bar. Choose the portfolio folder (or the repo that contains `portfolio/`), then the workspace folder your checkouts live under (the first time only).
+2. The app scans the workspace, up to four folders deep, for git checkouts and matches each repo by its `origin` remote. A project's folder is `<workspace>/<slug>` when that holds all its checkouts, otherwise the folder that does.
+3. Pick a project from the switcher at the left of the top bar. Build and every section open at the project's folder, and the Build sidebar lists its repos. Repos with no local checkout are greyed out.
+4. **Projects → Re-import Projects** picks up changes to the portfolio. If a project's folder is wrong, open the right one and choose **Use current folder as project folder** from the switcher; re-imports keep it.
+
 ## 4. Tabs
 
 The **+** at the end of a section's tab strip opens:
@@ -77,7 +99,7 @@ For a project in `~/code/my-app`:
 
 ## Where settings are stored
 
-Preferences (section folders, starred folders, the last open folder) are saved to:
+Preferences (section folders, starred folders, the last open folder, imported projects) are saved to:
 
 ```
 ~/Library/Application Support/TeamAICoder/teamaicoder-preferences.json
