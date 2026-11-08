@@ -106,6 +106,27 @@ test.describe('Preview browser tabs', () => {
     }
   });
 
+  test('hides passkeys so sign-in pages fall back to passwords', async () => {
+    const { app, win } = await launchApp();
+    try {
+      await clickTabAddItem(win, 'New Browser');
+      await navigateActiveUrl(win, srv.url);
+      await waitForPreviewUrl(app, u => u.startsWith(srv.url));
+      await expect.poll(() => runInPreview(app, 'document.readyState'), { timeout: 8000 }).toBe('complete');
+      const result = await runInPreview(app, `(async () => {
+        const hidden = typeof window.PublicKeyCredential === 'undefined';
+        let error = null;
+        try {
+          await navigator.credentials.get({ publicKey: { challenge: new Uint8Array(16) } });
+        } catch (e) { error = e.name; }
+        return { hidden, error };
+      })()`);
+      expect(result).toEqual({ hidden: true, error: 'NotAllowedError' });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('a sign-in popup opens as a child window on the same session', async () => {
     const { app, win } = await launchApp();
     try {

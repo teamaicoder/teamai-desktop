@@ -375,6 +375,12 @@ function previewSession() {
   if (!previewSessionReady) {
     previewSessionReady = true;
     ses.setUserAgent(chromeUserAgent(ses.getUserAgent()));
+    // Hide WebAuthn so sign-in pages skip passkeys Electron can't complete
+    ses.registerPreloadScript({
+      type: 'frame',
+      id: 'preview-no-passkeys',
+      filePath: path.join(__dirname, 'main', 'preview-preload.js'),
+    });
   }
   return ses;
 }
