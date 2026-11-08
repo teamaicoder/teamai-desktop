@@ -42,6 +42,28 @@ Each section has its own folder, file tree and tabs. None of the folders above i
 
 The app remembers each section's folder between launches.
 
+### Projects
+
+If you keep a portfolio, a folder with one markdown file per project, the app can import it. Each file starts with YAML frontmatter:
+
+```markdown
+---
+slug: my-app
+title: My App
+one_liner: What it is, in a sentence
+phase: build          # shown as a chip in the switcher
+health: green         # green, amber or red
+repos:
+  - github.com/my-org/my-app        # comments after '#' are ignored
+  - github.com/my-org/my-app-infra
+---
+```
+
+1. **Projects → Import from Portfolio…** in the menu bar. Choose the portfolio folder (or the repo that contains `portfolio/`), then the workspace folder your checkouts live under (the first time only).
+2. The app scans the workspace, up to four folders deep, for git checkouts and matches each repo by its `origin` remote. A project's folder is `<workspace>/<slug>` when that holds all its checkouts, otherwise the folder that does.
+3. Pick a project from the switcher at the left of the top bar. Build and every section open at the project's folder, and the Build sidebar lists its repos. Repos with no local checkout are greyed out.
+4. **Projects → Re-import Projects** picks up changes to the portfolio. If a project's folder is wrong, open the right one and choose **Use current folder as project folder** from the switcher; re-imports keep it.
+
 ## 4. Tabs
 
 The **+** at the end of a section's tab strip opens:
@@ -58,6 +80,65 @@ Clicking a file in the tree opens it in a tab. Markdown files open rendered. Swi
 Browser and Chat + Preview tabs behave like a normal browser profile. Sign in to Microsoft 365, Google or any other site the usual way (including multi-factor prompts) and the sign-in is shared by every browser tab and kept across restarts. Sign-in windows that a site opens as a popup appear as a small window and close back into the page. Links that open a new tab open another browser tab in the same section.
 
 The tabs present themselves as Chrome, because some sign-in pages refuse unfamiliar browsers. This session is separate from the Workbench tab's.
+
+### Opening pages from a terminal
+
+Every terminal in the app has `BROWSER` set to a small helper, `teamai-open`, so a tool that opens a browser shows the page inside the app instead:
+
+- In a **Chat + Preview** tab, the page opens in that tab's own preview, on the right of the terminal.
+- In a **terminal tab**, it opens in a new browser tab right after the terminal.
+- In a section's bottom **Terminal** panel, it opens in a new browser tab in that section.
+
+This works for anything that honours `$BROWSER`, such as Python's `webbrowser` module, which many CLI tools and agent skills use to open a report or status page. You can also run it yourself:
+
+```bash
+"$BROWSER" report.html          # a file, relative to the current folder
+"$BROWSER" http://localhost:3000
+```
+
+Only `http`, `https` and `file` addresses are accepted. Outside the app the helper hands the page to your normal browser.
+
+### Reopening your last session
+
+When you quit and reopen the app, your tabs come back where they were, in Build and in every section, along with the section you were in:
+
+- **Files** reopen; any that have since been deleted are skipped.
+- **Terminals** start a fresh shell in the folder they were last in. Scrollback and running programs don't survive a restart, with one exception: a terminal that was running `claude` when you quit runs `claude --continue`, so the conversation picks up again. If two terminals in the same folder were running it, neither is resumed (they would both resume the same conversation). Set `"restoreClaude": false` in the preferences file to turn this off.
+- **Browser** and **Chat + Preview** tabs reload the page they were showing; you stay signed in.
+
+### A status board in Plan & Track
+
+A section can open on a status page of your own: a pinned **Status** tab, always first, that can't be closed. Set it up from the menu bar with **Plan & Track → Set Status Board…**, which asks for three things:
+
+| Field | What it is |
+|---|---|
+| **Refresh command** | A shell command that re-renders the all-projects page. It runs in your home folder, in your login shell. Optional: leave it empty for a page that's kept up to date some other way. |
+| **Page** | Where that page is: a file path (`~/…` works), a `file://` URL or an `http(s)://` URL. |
+| **Project refresh command** | A command that renders a page for one project. `{root}` is replaced with the active project's folder, and the command runs there. It must print the path of the page it wrote, ideally on a line starting with `wrote ` (for example `wrote /home/me/boards/alpha.html`). |
+
+For example, with a script that renders HTML status pages from your repos:
+
+```
+Refresh command:          ~/bin/render-status --all
+Page:                     ~/status/index.html
+Project refresh command:  cd {root} && ~/bin/render-status --project .
+```
+
+When you open the section, the Status tab shows the page straight away, runs the refresh command in the background and reloads when it finishes. It refreshes at most once every two minutes on its own; **Refresh** runs it immediately and the label beside it shows when it last finished. **All projects / This project** switches between the two pages (This project needs an active project). If a command fails, the end of its error output appears above the page and the last good page stays visible. Links between pages (for example from the board to a project's page) open inside the tab.
+
+If you move to another tab in the section, that tab stays active when you come back; the Status tab is shown first again the next time you launch the app. **Plan & Track → Clear Status Board** removes it.
+
+The setting is stored as `sectionHome` in the preferences file, keyed by section (`plan`, `ideas`, `design`, `test`, `deploy`, `operate`), so other sections can have a board too:
+
+```json
+"sectionHome": {
+  "plan": {
+    "refresh": "~/bin/render-status --all",
+    "page": "~/status/index.html",
+    "projectRefresh": "cd {root} && ~/bin/render-status --project ."
+  }
+}
+```
 
 ## 5. The Workbench tab
 
@@ -77,7 +158,7 @@ For a project in `~/code/my-app`:
 
 ## Where settings are stored
 
-Preferences (section folders, starred folders, the last open folder) are saved to:
+Preferences (section folders, starred folders, the last open folder, imported projects, the open tabs) are saved to:
 
 ```
 ~/Library/Application Support/TeamAICoder/teamaicoder-preferences.json

@@ -2,6 +2,7 @@
 
 // ── SVG icon library ──────────────────────────────────────────────────────────
 const IC = {
+  home: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>',
   folder:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12c0 1.1.9 2 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2z"/></svg>`,
   fileMd:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`,
   fileJson:  `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><path d="M10 13a2 2 0 1 0 0-2M14 11a2 2 0 1 0 0 2"/></svg>`,
@@ -82,7 +83,11 @@ const state = {
   entries: [],
   tabs: [],        // { id, type, title, path?, fileType?, content?, editMode?, dirty?, ptyId? }
   activeTabId: null,
-  prefs: { starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4 },
+  prefs: {
+    starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4,
+    projects: [], activeProject: null, portfolioDir: null, workspaceRoot: null,
+    sectionHome: {},
+  },
   gitBranches: {}, // path → branch name
   gitScanGen: 0,
 };
@@ -184,6 +189,17 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewS
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+// Unique suffix for tab ids (several tabs can be created in the same millisecond on restore)
+let tabSeq = 0;
+const uid = () => `${Date.now()}_${++tabSeq}`;
+
+// Add a tab to a tab list, right after afterId when given, otherwise at the end
+function insertTab(tabs, tab, afterId) {
+  const i = afterId ? tabs.findIndex(t => t.id === afterId) : -1;
+  if (i >= 0) tabs.splice(i + 1, 0, tab);
+  else tabs.push(tab);
+}
+
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
 function findTabPane(tabId) {
@@ -324,6 +340,7 @@ function renderStarredSection() {
   const sec = document.getElementById('starred-section');
   const starred = state.prefs.starredFolders;
   sec.innerHTML = '';
+  renderProjectRepos(sec);
 
   if (starred.length === 0) return;
 
@@ -515,6 +532,7 @@ function buildFileRow(entry) {
 // ── Tab management ────────────────────────────────────────────────────────────
 function setActiveTab(id) {
   state.activeTabId = id;
+  scheduleSessionSave();
   renderTabBar();
 
   document.querySelectorAll('.tab-pane').forEach(pane => {
@@ -568,6 +586,7 @@ function closeTab(id) {
   if (pane) pane.remove();
 
   state.tabs.splice(idx, 1);
+  scheduleSessionSave();
 
   if (state.activeTabId === id) {
     const next = state.tabs[idx < state.tabs.length ? idx : state.tabs.length - 1];
@@ -1034,13 +1053,20 @@ function attachTerminal(container, ptyId) {
   terminals.set(ptyId, { term, fitAddon });
 
   // Defer open until the pane is visible — xterm requires the container to have
-  // real dimensions when open() is called, so we must wait until setActiveTab
-  // has set display:flex on the pane.
-  requestAnimationFrame(() => {
+  // real dimensions when open() is called. A tab created in the background
+  // (session restore) opens its terminal the first time its pane is shown.
+  const openIfVisible = () => {
+    if (!container.offsetWidth || !container.offsetHeight) return false;
     term.open(container);
     fitAddon.fit();
     window.api.ptyResize(ptyId, term.cols, term.rows);
     new ResizeObserver(() => fitAddon.fit()).observe(container);
+    return true;
+  };
+  requestAnimationFrame(() => {
+    if (openIfVisible()) return;
+    const ro = new ResizeObserver(() => { if (openIfVisible()) ro.disconnect(); });
+    ro.observe(container);
   });
 }
 
@@ -1052,10 +1078,10 @@ function openFileFromFinder(filePath) {
 }
 
 // ── Open file tab ─────────────────────────────────────────────────────────────
-async function openFileTab(entry) {
+async function openFileTab(entry, { activate = true } = {}) {
   console.log(`[app] openFileTab "${entry.path}"`);
   const existing = state.tabs.find(t => t.id === entry.path);
-  if (existing) { setActiveTab(existing.id); return; }
+  if (existing) { if (activate) setActiveTab(existing.id); return; }
 
   const ext = window.api.extname(entry.path);
   const fileType = fileTypeFor(ext);
@@ -1073,7 +1099,8 @@ async function openFileTab(entry) {
 
   state.tabs.push(tab);
   syncTabContents();
-  setActiveTab(tab.id);
+  if (activate) setActiveTab(tab.id);
+  else renderTabBar();
   updatePanelVisibility();
 
   if (fileType === 'image') {
@@ -1114,36 +1141,41 @@ async function spawnPty(dir) {
   }
 }
 
-async function openTerminalTab(dir) {
+async function openTerminalTab(dir, { input, activate = true } = {}) {
   console.log(`[app] openTerminalTab "${dir}"`);
   const spawned = await spawnPty(dir);
-  if (!spawned) return;
+  if (!spawned) return null;
   const { ptyId, cwd } = spawned;
+  if (input) window.api.ptyWrite(ptyId, input);
 
   const tab = {
-    id: `terminal_${cwd}_${Date.now()}`,
+    id: `terminal_${cwd}_${uid()}`,
     type: 'terminal',
     title: window.api.basename(cwd),
     ptyId,
+    cwd,
   };
 
   state.tabs.push(tab);
   syncTabContents();
-  setActiveTab(tab.id);
+  if (activate) setActiveTab(tab.id);
   updatePanelVisibility();
+  return tab;
 }
 
 // ── Open browser tab ──────────────────────────────────────────────────────────
-async function openBrowserTab(initialUrl) {
+async function openBrowserTab(initialUrl, { afterId, activate = true } = {}) {
   console.log('[app] openBrowserTab', initialUrl);
   const viewId = await window.api.browserCreate();
   console.log('[app] browserCreate → viewId=', viewId);
-  const tab = newBrowserTab(`browser_${Date.now()}`, viewId, initialUrl);
-  state.tabs.push(tab);
+  const tab = newBrowserTab(`browser_${uid()}`, viewId, initialUrl);
+  insertTab(state.tabs, tab, afterId);
   syncTabContents();
-  setActiveTab(tab.id);
+  if (activate) setActiveTab(tab.id);
+  else renderTabBar();
   updatePanelVisibility();
   if (initialUrl) window.api.browserNavigate(viewId, initialUrl).catch(() => {});
+  return tab;
 }
 
 function hostTitle(url) {
@@ -1162,28 +1194,33 @@ function setTabUrl(tab, url) {
 
 // ── Open Chat + Preview tab ───────────────────────────────────────────────────
 // A terminal (run `claude` in it) beside a preview browser, split by a divider.
-async function createSplitTab(idPrefix, dir) {
+// url: the preview's first page; input: typed into the terminal once it starts
+async function createSplitTab(idPrefix, dir, { url = '', input } = {}) {
   const spawned = await spawnPty(dir);
   if (!spawned) return null;
+  if (input) window.api.ptyWrite(spawned.ptyId, input);
   const viewId = await window.api.browserCreate();
   console.log(`[app] split tab: pty=${spawned.ptyId} view=${viewId} cwd="${spawned.cwd}"`);
+  if (url) window.api.browserNavigate(viewId, url).catch(() => {});
   return {
-    id: `${idPrefix}split_${Date.now()}`,
+    id: `${idPrefix}split_${uid()}`,
     type: 'split',
     title: 'Chat + Preview',
     ptyId: spawned.ptyId,
     viewId,
-    url: '',
+    url,
+    cwd: spawned.cwd,
   };
 }
 
-async function openSplitTab(dir) {
-  const tab = await createSplitTab('', dir);
-  if (!tab) return;
+async function openSplitTab(dir, { url, input, activate = true } = {}) {
+  const tab = await createSplitTab('', dir, { url, input });
+  if (!tab) return null;
   state.tabs.push(tab);
   syncTabContents();
-  setActiveTab(tab.id);
+  if (activate) setActiveTab(tab.id);
   updatePanelVisibility();
+  return tab;
 }
 
 // ── Browser pane ──────────────────────────────────────────────────────────────
@@ -1475,6 +1512,17 @@ class FileBrowserSection {
 
   getStarredFolder() { return this._getPrefs().folder ?? null; }
 
+  // Point this section at a folder (a project's root): now if it's open,
+  // otherwise when it's first visited
+  setRoot(dir) {
+    if (this.s.initialized) {
+      this.s.rootDir = dir;
+      this.navigateTo(dir);
+    } else {
+      this._pendingRoot = dir;
+    }
+  }
+
   async toggleStar(path) {
     const p = this._getPrefs();
     p.folder = p.folder === path ? null : path;
@@ -1765,8 +1813,12 @@ class FileBrowserSection {
   }
 
   // ── Tab system ────────────────────────────────────────────────────────────
-  setActiveTab(id) {
+  // auto: chosen by the app (restore, closing a tab, showing the Status tab),
+  // not by the user, so it doesn't count as leaving the Status tab
+  setActiveTab(id, { auto = false } = {}) {
     this.s.activeTabId = id;
+    if (!auto && id !== this.homeTabId) this.movedFromHome = true;
+    scheduleSessionSave();
     this.renderTabBar();
     this.el('tab-content')?.querySelectorAll('.tab-pane').forEach(pane => {
       pane.classList.toggle('active', pane.dataset.tabId === id);
@@ -1797,10 +1849,11 @@ class FileBrowserSection {
     window.api.browserShow(tab.viewId, { x: r.x, y: r.y, width: r.width, height: r.height });
   }
 
-  closeTab(id) {
+  closeTab(id, { force = false } = {}) {
     const idx = this.s.tabs.findIndex(t => t.id === id);
     if (idx < 0) return;
     const tab = this.s.tabs[idx];
+    if (tab.pinned && !force) return;
     if (tab.path) window.api.unwatchFile(tab.path);
     disposeTabResources(tab);
     const editor = toastEditorInstances.get(id);
@@ -1813,12 +1866,13 @@ class FileBrowserSection {
       }
     }
     this.s.tabs.splice(idx, 1);
+    scheduleSessionSave();
     if (this.s.activeTabId === id) {
       const next = this.s.tabs[idx < this.s.tabs.length ? idx : this.s.tabs.length - 1];
       this.s.activeTabId = next?.id ?? null;
     }
     this.renderTabBar();
-    if (this.s.activeTabId) this.setActiveTab(this.s.activeTabId);
+    if (this.s.activeTabId) this.setActiveTab(this.s.activeTabId, { auto: true });
     this.updatePanelVisibility();
   }
 
@@ -1842,13 +1896,17 @@ class FileBrowserSection {
       const isActive = tab.id === this.s.activeTabId;
       const isBrowser = tab.type === 'browser';
       const isSplit = tab.type === 'split';
+      const isHome = tab.type === 'home';
       const chip = document.createElement('div');
-      chip.className = `tab-chip${isActive ? ' active' : ''} ${isSplit ? 'split-tab' : isBrowser ? 'browser-tab' : 'file-tab'}`;
-      chip.title = tab.path || tab.url || tab.title;
+      chip.className = `tab-chip${isActive ? ' active' : ''} ${isHome ? 'home-tab' : isSplit ? 'split-tab' : isBrowser ? 'browser-tab' : 'file-tab'}`;
+      chip.title = isHome ? 'Status board' : (tab.path || tab.url || tab.title);
 
       const iconSpan = document.createElement('span');
       iconSpan.className = 'tab-icon';
-      if (isSplit) {
+      if (isHome) {
+        iconSpan.innerHTML = IC.home;
+        iconSpan.style.color = 'var(--color-primary)';
+      } else if (isSplit) {
         iconSpan.innerHTML = IC.split;
         iconSpan.style.color = 'var(--color-primary)';
       } else if (isBrowser) {
@@ -1869,12 +1927,14 @@ class FileBrowserSection {
       titleSpan.textContent = tab.title;
       chip.appendChild(titleSpan);
 
-      const closeBtn = document.createElement('button');
-      closeBtn.className = 'tab-close';
-      closeBtn.innerHTML = IC.close;
-      closeBtn.title = 'Close tab';
-      closeBtn.onclick = e => { e.stopPropagation(); this.closeTab(tab.id); };
-      chip.appendChild(closeBtn);
+      if (!tab.pinned) {
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'tab-close';
+        closeBtn.innerHTML = IC.close;
+        closeBtn.title = 'Close tab';
+        closeBtn.onclick = e => { e.stopPropagation(); this.closeTab(tab.id); };
+        chip.appendChild(closeBtn);
+      }
 
       chip.onclick = () => this.setActiveTab(tab.id);
       bar.appendChild(chip);
@@ -1917,35 +1977,40 @@ class FileBrowserSection {
         pane.dataset.tabId = tab.id;
         container.appendChild(pane);
         if (tab.type === 'browser') buildBrowserPane(pane, tab, () => this.renderTabBar());
+        else if (tab.type === 'home') buildHomePane(pane, tab, this);
         else if (tab.type === 'split') buildSplitPane(pane, tab, { onTitleChange: () => this.renderTabBar(), reposition: () => this._positionBrowserView(tab) });
         else buildFilePane(pane, tab);
       }
     }
   }
 
-  async openBrowserTab(initialUrl) {
+  async openBrowserTab(initialUrl, { afterId, activate = true } = {}) {
     const viewId = await window.api.browserCreate();
-    const tab = newBrowserTab(`${this.prefix}browser_${Date.now()}`, viewId, initialUrl);
-    this.s.tabs.push(tab);
+    const tab = newBrowserTab(`${this.prefix}browser_${uid()}`, viewId, initialUrl);
+    insertTab(this.s.tabs, tab, afterId);
     this.syncTabContents();
-    this.setActiveTab(tab.id);
+    if (activate) this.setActiveTab(tab.id);
+    else this.renderTabBar();
     this.updatePanelVisibility();
     if (initialUrl) window.api.browserNavigate(viewId, initialUrl).catch(() => {});
+    return tab;
   }
 
-  async openSplitTab() {
-    const tab = await createSplitTab(this.prefix, this.s.currentDir);
-    if (!tab) return;
+  async openSplitTab(dir, { url, input, activate = true } = {}) {
+    const tab = await createSplitTab(this.prefix, dir || this.s.currentDir, { url, input });
+    if (!tab) return null;
     this.s.tabs.push(tab);
     this.syncTabContents();
-    this.setActiveTab(tab.id);
+    if (activate) this.setActiveTab(tab.id);
+    else this.renderTabBar();
     this.updatePanelVisibility();
+    return tab;
   }
 
-  async openFileTab(entry) {
+  async openFileTab(entry, { activate = true } = {}) {
     const tabId = `${this.prefix}${entry.path}`;
     const existing = this.s.tabs.find(t => t.id === tabId);
-    if (existing) { this.setActiveTab(tabId); return; }
+    if (existing) { if (activate) this.setActiveTab(tabId); return; }
 
     const ext = window.api.extname(entry.path);
     const fileType = fileTypeFor(ext);
@@ -1958,7 +2023,8 @@ class FileBrowserSection {
 
     this.s.tabs.push(tab);
     this.syncTabContents();
-    this.setActiveTab(tabId);
+    if (activate) this.setActiveTab(tabId);
+    else this.renderTabBar();
     this.updatePanelVisibility();
 
     if (fileType === 'image') {
@@ -2104,16 +2170,67 @@ class FileBrowserSection {
     this.s.initialized = true;
     this.buildDOM();
     const p = this._getPrefs();
-    const startDir = p.folder || p.lastFolder || window.api.homedir();
+    const startDir = this._pendingRoot || p.folder || p.lastFolder || window.api.homedir();
+    this._pendingRoot = null;
     this.s.rootDir = startDir;
     await this.navigateTo(startDir);
     this.renderTabBar();
     this.updatePanelVisibility();
     this.initSplitHandle();
     await this.initTerminal();
+    await this.restoreSession();
+    this.ready = true;
+    await this.ensureHome();
+  }
+
+  get homeTabId() { return `${this.prefix}home`; }
+
+  // The pinned Status tab: present first when this section has a status board
+  // configured (prefs.sectionHome), removed when it hasn't. Shown on each visit
+  // unless the user has moved to another tab in this section this session.
+  async ensureHome() {
+    if (this._homeBusy) return this._homeBusy;
+    this._homeBusy = (async () => {
+      const cfg = homeConfig(this.id);
+      let tab = this.s.tabs.find(t => t.type === 'home');
+      if (!cfg) {
+        if (tab) this.closeTab(tab.id, { force: true });
+        return;
+      }
+      if (!tab) {
+        const viewId = await window.api.browserCreate();
+        tab = { id: this.homeTabId, type: 'home', title: 'Status', pinned: true, viewId, url: '', mode: 'all', pages: {}, lastRun: {} };
+        this.s.tabs.unshift(tab);
+        this.syncTabContents();
+        this.updatePanelVisibility();
+      }
+      if (!this.movedFromHome || this.s.activeTabId === tab.id) this.setActiveTab(tab.id, { auto: true });
+      else this.renderTabBar();
+      showHome(this, tab);
+    })().finally(() => { this._homeBusy = null; });
+    return this._homeBusy;
+  }
+
+  // Reopen this section's tabs from the saved session (once, on first visit)
+  async restoreSession() {
+    const saved = sessionState.saved?.sections[this.id];
+    if (saved && saved.tabs.length) {
+      const active = await restoreEntries(this.id, saved, {
+        file: async p => {
+          await this.openFileTab({ path: p, name: window.api.basename(p) }, { activate: false });
+          return this.s.tabs.find(t => t.id === `${this.prefix}${p}`);
+        },
+        browser: url => this.openBrowserTab(url, { activate: false }),
+        split: (cwd, url, input) => this.openSplitTab(cwd, { url, input, activate: false }),
+      });
+      if (active) this.setActiveTab(active.id, { auto: true });
+    }
+    this.sessionRestored = true;
+    scheduleSessionSave();
   }
 
   onVisible() {
+    if (this.ready) this.ensureHome();
     if (this.terminalPtyId !== null) {
       const ti = terminals.get(this.terminalPtyId);
       if (ti) requestAnimationFrame(() => ti.fitAddon.fit());
@@ -2146,6 +2263,352 @@ function findViewOwner(viewId) {
     if (tab) return { tab, renderTabBar: () => sec.renderTabBar(), openBrowserTab: url => sec.openBrowserTab(url) };
   }
   return null;
+}
+
+// ── Section home: a status board pinned first in a section ───────────────────
+// Configured per section in prefs.sectionHome (see docs). The page shows at
+// once; the refresh command runs in main in the background and the page
+// reloads when it finishes. Automatic refreshes run at most every 2 minutes
+// per view; the Refresh button always runs one.
+const HOME_THROTTLE_MS = 2 * 60 * 1000;
+
+function homeConfig(sectionId) {
+  return (state.prefs.sectionHome || {})[sectionId] || null;
+}
+
+const hhmm = d => d.toTimeString().slice(0, 5);
+
+function buildHomePane(pane, tab, sec) {
+  pane.classList.add('browser-pane', 'home-pane');
+  pane.innerHTML = `
+    <div class="viewer-toolbar home-toolbar">
+      <div class="home-mode" role="group">
+        <button type="button" class="home-mode-btn" data-mode="all">All projects</button>
+        <button type="button" class="home-mode-btn" data-mode="project">This project</button>
+      </div>
+      <span class="home-status"></span>
+      <button type="button" class="browser-nav-btn home-refresh" title="Refresh">${IC.reload}<span>Refresh</span></button>
+    </div>
+    <div class="home-error" hidden><pre></pre></div>
+    <div class="browser-placeholder"></div>`;
+  for (const b of pane.querySelectorAll('.home-mode-btn')) {
+    b.addEventListener('click', () => {
+      if (b.disabled || tab.mode === b.dataset.mode) return;
+      tab.mode = b.dataset.mode;
+      showHome(sec, tab);
+    });
+  }
+  pane.querySelector('.home-refresh').addEventListener('click', () => showHome(sec, tab, { force: true }));
+  updateHomeToolbar(sec, tab);
+}
+
+function homePane(sec, tab) {
+  return [...(sec.el('tab-content')?.querySelectorAll('.tab-pane') || [])].find(p => p.dataset.tabId === tab.id) || null;
+}
+
+function updateHomeToolbar(sec, tab) {
+  const pane = homePane(sec, tab);
+  if (!pane) return;
+  const cfg = homeConfig(sec.id) || {};
+  const root = activeProject()?.root;
+  const canProject = !!(cfg.projectRefresh && root);
+  const canAll = !!(cfg.page || cfg.refresh);
+  if (tab.mode === 'project' && !canProject && canAll) tab.mode = 'all';
+  if (tab.mode === 'all' && !canAll && canProject) tab.mode = 'project';
+  for (const b of pane.querySelectorAll('.home-mode-btn')) {
+    b.classList.toggle('active', b.dataset.mode === tab.mode);
+    if (b.dataset.mode === 'project') {
+      b.disabled = !canProject;
+      b.title = !cfg.projectRefresh ? 'No project command is set' : !root ? 'Choose a project first' : `Status of ${activeProject().title}`;
+    }
+    if (b.dataset.mode === 'all') b.disabled = !canAll;
+  }
+  const key = homeKey(tab);
+  const status = pane.querySelector('.home-status');
+  status.textContent = tab.running === key ? 'Refreshing…' : tab.lastRun[key] ? `updated ${hhmm(new Date(tab.lastRun[key]))}` : '';
+  pane.querySelector('.home-refresh').disabled = tab.running === key;
+}
+
+function showHomeError(sec, tab, message) {
+  const pane = homePane(sec, tab);
+  if (!pane) return;
+  const box = pane.querySelector('.home-error');
+  box.hidden = !message;
+  box.querySelector('pre').textContent = message || '';
+  if (sec.s.activeTabId === tab.id) requestAnimationFrame(() => sec._positionBrowserView(tab));
+}
+
+function homeKey(tab) {
+  return tab.mode === 'project' ? `project:${activeProject()?.root || ''}` : 'all';
+}
+
+// Always load by URL, never reload: the first load can fail because the page
+// hasn't been rendered yet, and reloading a failed load reloads the error page.
+function navigateHome(tab, url) {
+  if (!url) return;
+  window.api.browserNavigate(tab.viewId, url).catch(() => {});
+  tab.url = url;
+}
+
+// Show the page for the tab's current mode now, then refresh it in the
+// background and reload. A background refresh doesn't pull the view back if the
+// user has followed a link to some other page; Refresh (force) always does.
+async function showHome(sec, tab, { force = false } = {}) {
+  const cfg = homeConfig(sec.id);
+  if (!cfg) return;
+  updateHomeToolbar(sec, tab);
+  const key = homeKey(tab);
+  const root = activeProject()?.root || null;
+  const known = tab.mode === 'project' ? tab.pages[key] : cfg.page;
+  if (tab.shownKey !== key) {
+    tab.shownKey = key;
+    tab.boardUrl = known || null;
+    if (known) navigateHome(tab, known);
+  }
+
+  const last = tab.lastRun[key] || 0;
+  if (tab.running === key || (!force && Date.now() - last < HOME_THROTTLE_MS)) return;
+  tab.running = key;
+  updateHomeToolbar(sec, tab);
+  let res;
+  try {
+    res = await window.api.homeRefresh({ section: sec.id, mode: tab.mode, root });
+  } catch (err) {
+    res = { ok: false, error: String(err?.message || err) };
+  }
+  tab.running = null;
+  tab.lastRun[key] = Date.now();
+  if (res.ok && res.url) {
+    if (tab.mode === 'project') tab.pages[key] = res.url;
+    const stillHere = homeKey(tab) === key;
+    const atBoard = !tab.url || !tab.boardUrl || tab.url === tab.boardUrl || tab.url === res.url;
+    if (stillHere && (force || atBoard)) {
+      tab.boardUrl = res.url;
+      navigateHome(tab, res.url);
+    }
+    showHomeError(sec, tab, null);
+  } else {
+    showHomeError(sec, tab, res.error || 'The refresh failed.');
+  }
+  updateHomeToolbar(sec, tab);
+}
+
+function sectionLabel(id) {
+  return SECTIONS[id]?.label || id;
+}
+
+const homeDialog = { open: false };
+
+function openHomeDialog(sectionId) {
+  if (homeDialog.open || !SECTIONS[sectionId]) return;
+  homeDialog.open = true;
+  hideNativeViews();
+  const cfg = homeConfig(sectionId) || {};
+  const backdrop = document.createElement('div');
+  backdrop.className = 'workbench-dialog-backdrop';
+  backdrop.innerHTML = `
+    <form class="workbench-dialog home-dialog" id="home-dialog">
+      <h3>${esc(sectionLabel(sectionId))} status board</h3>
+      <p>A page pinned as the first tab of ${esc(sectionLabel(sectionId))}, refreshed in the background when you open the section.</p>
+      <label>Refresh command <span>(re-renders the all-projects page; runs in your home folder)</span>
+        <input type="text" id="home-refresh-input" spellcheck="false" placeholder="./scripts/render-board.sh"></label>
+      <label>Page <span>(file path, file:// or http(s) URL)</span>
+        <input type="text" id="home-page-input" spellcheck="false" placeholder="~/reports/board.html"></label>
+      <label>Project refresh command <span>({root} is the active project's folder; it prints the page it wrote)</span>
+        <input type="text" id="home-project-input" spellcheck="false" placeholder="cd {root} && ./scripts/render-status.sh"></label>
+      <p class="invalid" id="home-invalid" hidden>Set a page, or a project refresh command.</p>
+      <div class="workbench-dialog-actions">
+        <button type="button" class="workbench-btn" id="home-dialog-cancel">Cancel</button>
+        <button type="submit" class="workbench-btn primary" id="home-dialog-save">Save</button>
+      </div>
+    </form>`;
+  document.body.appendChild(backdrop);
+  const field = id => backdrop.querySelector(id);
+  field('#home-refresh-input').value = cfg.refresh || '';
+  field('#home-page-input').value = cfg.page || '';
+  field('#home-project-input').value = cfg.projectRefresh || '';
+  field('#home-refresh-input').focus();
+
+  const close = () => {
+    backdrop.remove();
+    homeDialog.open = false;
+    restoreNativeViews();
+  };
+  field('#home-dialog-cancel').addEventListener('click', close);
+  backdrop.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  backdrop.querySelector('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const entry = {
+      refresh: field('#home-refresh-input').value.trim() || null,
+      page: field('#home-page-input').value.trim() || null,
+      projectRefresh: field('#home-project-input').value.trim() || null,
+    };
+    if (!entry.page && !entry.projectRefresh) { field('#home-invalid').hidden = false; return; }
+    await setSectionHome(sectionId, entry);
+    close();
+    showSection(sectionId);
+  });
+}
+
+// Save (or clear, with null) a section's status board and apply it
+async function setSectionHome(sectionId, entry) {
+  if (!state.prefs.sectionHome) state.prefs.sectionHome = {};
+  if (entry) state.prefs.sectionHome[sectionId] = entry;
+  else delete state.prefs.sectionHome[sectionId];
+  await savePrefs();
+  // Main normalises it (expands ~, turns paths into file:// URLs)
+  state.prefs.sectionHome = (await window.api.loadPrefs()).sectionHome;
+  const sec = SECTIONS[sectionId];
+  const home = sec.s.tabs.find(t => t.type === 'home');
+  if (home) { home.lastRun = {}; home.pages = {}; home.url = ''; }
+  if (sec.ready) await sec.ensureHome();
+}
+
+function initSectionHome() {
+  window.api.onHomeConfigure(({ section }) => openHomeDialog(section));
+  window.api.onHomeClear(({ section }) => setSectionHome(section, null));
+}
+
+// ── Session: reopen the last tabs on launch ──────────────────────────────────
+// Build's tabs are restored during init; each section's on its first visit
+// (sections initialise lazily). Until a section is restored its saved tabs are
+// carried over unchanged, so visiting only Build doesn't lose them.
+const sessionState = { saved: null, claudeKeys: new Set(), restoring: true, timer: null, lastJson: null };
+
+function activeSectionId() {
+  return document.querySelector('.nav-tab.active')?.dataset.section || 'build';
+}
+
+function snapshotSession() {
+  const saved = sessionState.saved || TacSession.normalizeSession(null);
+  const sections = { build: TacSession.serializeTabs(state.tabs, state.activeTabId) };
+  for (const [id, sec] of Object.entries(SECTIONS)) {
+    sections[id] = sec.sessionRestored
+      ? TacSession.serializeTabs(sec.s.tabs, sec.s.activeTabId)
+      : saved.sections[id];
+  }
+  return { version: TacSession.VERSION, activeSection: activeSectionId(), sections };
+}
+
+async function saveSessionNow() {
+  if (sessionState.restoring) return;
+  const snap = snapshotSession();
+  const ptyIds = [];
+  for (const sec of Object.values(snap.sections)) {
+    for (const e of sec.tabs) if (e.ptyId != null) ptyIds.push(e.ptyId);
+  }
+  if (ptyIds.length) TacSession.applyPtyInfo(snap, await window.api.ptyInfo(ptyIds));
+  const json = JSON.stringify(snap);
+  if (json === sessionState.lastJson) return;
+  sessionState.lastJson = json;
+  state.prefs.session = snap;
+  await savePrefs();
+}
+
+function scheduleSessionSave() {
+  if (sessionState.restoring) return;
+  clearTimeout(sessionState.timer);
+  sessionState.timer = setTimeout(() => {
+    saveSessionNow().catch(err => console.warn('[app] session save failed:', err));
+  }, 400);
+}
+
+// Recreate saved tabs with the given openers, in order and in the background.
+// Missing files and folders are skipped. Returns the tab to make active.
+async function restoreEntries(sectionId, saved, openers) {
+  const created = [];
+  for (const [i, e] of saved.tabs.entries()) {
+    let tab = null;
+    try {
+      const resume = state.prefs.restoreClaude !== false && sessionState.claudeKeys.has(`${sectionId}:${i}`);
+      const input = resume ? 'claude --continue\r' : undefined;
+      if (e.type === 'file') {
+        if ((await window.api.pathExists(e.path)).exists) tab = await openers.file(e.path);
+      } else if (e.type === 'terminal' && openers.terminal) {
+        if ((await window.api.pathExists(e.cwd)).isDir) tab = await openers.terminal(e.cwd, input);
+      } else if (e.type === 'browser') {
+        tab = await openers.browser(e.url);
+      } else if (e.type === 'split') {
+        if ((await window.api.pathExists(e.cwd)).isDir) tab = await openers.split(e.cwd, e.url, input);
+      }
+    } catch (err) {
+      console.warn(`[app] restore ${sectionId}:${i} failed:`, err);
+    }
+    created.push(tab || null);
+  }
+  return created[saved.active] || created.find(Boolean) || null;
+}
+
+async function restoreSession() {
+  const saved = TacSession.normalizeSession(state.prefs.session);
+  sessionState.saved = saved;
+  sessionState.claudeKeys = TacSession.claudeContinueKeys(saved);
+  const build = saved.sections.build;
+  if (build.tabs.length) {
+    const active = await restoreEntries('build', build, {
+      file: async p => {
+        await openFileTab({ path: p, name: window.api.basename(p) }, { activate: false });
+        return state.tabs.find(t => t.id === p);
+      },
+      terminal: (cwd, input) => openTerminalTab(cwd, { input, activate: false }),
+      browser: url => openBrowserTab(url, { activate: false }),
+      split: (cwd, url, input) => openSplitTab(cwd, { url, input, activate: false }),
+    });
+    if (active) setActiveTab(active.id);
+  }
+  sessionState.restoring = false;
+  if (saved.activeSection !== 'build') showSection(saved.activeSection);
+  scheduleSessionSave();
+  setInterval(() => saveSessionNow().catch(() => {}), 30000);
+}
+
+// Switch the top-level section (no-op if it's already active or its tab is hidden)
+function showSection(id) {
+  const navTab = document.querySelector(`.nav-tab[data-section="${id}"]`);
+  if (!navTab || navTab.hidden || navTab.classList.contains('active')) return;
+  navTab.click();
+}
+
+// ── Pages opened from terminals ───────────────────────────────────────────────
+// teamai-open ($BROWSER in every terminal) → main → here, with the terminal's
+// ptyId. A Chat + Preview tab shows the page in its own preview; a terminal tab
+// or a section's bottom terminal gets a new browser tab beside it.
+function navigateSplitPreview(tab, url, renderBar) {
+  setTabUrl(tab, url);
+  updateBrowserToolbar(tab.viewId, { url });
+  renderBar();
+  window.api.browserNavigate(tab.viewId, url).catch(() => {});
+}
+
+async function openFromTerminal({ url, ptyId }) {
+  const owns = t => ptyId != null && String(t.ptyId) === String(ptyId);
+  const buildTab = state.tabs.find(owns);
+  if (buildTab) {
+    showSection('build');
+    if (buildTab.type === 'split') {
+      navigateSplitPreview(buildTab, url, renderTabBar);
+      setActiveTab(buildTab.id);
+    } else {
+      await openBrowserTab(url, { afterId: buildTab.id });
+    }
+    return;
+  }
+  for (const [id, sec] of Object.entries(SECTIONS)) {
+    const tab = sec.s.tabs.find(owns);
+    if (tab) {
+      showSection(id);
+      navigateSplitPreview(tab, url, () => sec.renderTabBar());
+      sec.setActiveTab(tab.id);
+      return;
+    }
+    if (ptyId != null && String(sec.terminalPtyId) === String(ptyId)) {
+      showSection(id);
+      await sec.openBrowserTab(url, { afterId: sec.s.activeTabId });
+      return;
+    }
+  }
+  showSection('build');
+  await openBrowserTab(url);
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -2202,6 +2665,7 @@ async function init() {
       setTabUrl(tab, url);
       updateBrowserToolbar(viewId, event);
       owner.renderTabBar();
+      scheduleSessionSave();
     } else if (type === 'title' && title && !tab.url && tab.type === 'browser') {
       tab.title = title;
       owner.renderTabBar();
@@ -2242,16 +2706,25 @@ async function init() {
   renderTabBar();
   updatePanelVisibility();
   initWorkbench();
+  initProjects();
+  initSectionHome();
+  window.api.onPreviewOpen(req => openFromTerminal(req).catch(err => console.error('[app] preview:open failed:', err)));
+  await restoreSession();
   window.api.onOpenFile(({ filePath }) => openFileFromFinder(filePath));
   for (const filePath of await window.api.appReady()) openFileFromFinder(filePath);
   console.log('[app] init() complete');
 }
 
 // Test helpers — only used when NODE_ENV=test (Playwright UI tests)
+window._testAddProjectFolder = dir => runAddProjectFolder(dir);
 window._testNavigateTo = async (dir) => {
   state.rootDir = dir;
   await navigateTo(dir);
 };
+
+window._testSetSectionHome = (sectionId, entry) => setSectionHome(sectionId, entry);
+
+window._testImportProjects = (portfolioDir, workspaceRoot) => runProjectImport({ portfolioDir, workspaceRoot });
 
 // Global safety nets — surface any unhandled promise rejections or JS errors
 window.addEventListener('unhandledrejection', e => {
@@ -2372,6 +2845,190 @@ function initWorkbench() {
   applyWorkbenchUrl();
 }
 
+// ── Projects ──────────────────────────────────────────────────────────────
+// Projects are imported from a portfolio (Projects → Import from Portfolio…)
+// and kept in preferences. Choosing one points Build and every section at the
+// project's folder, and lists its repos at the top of the Build sidebar.
+const projectMenu = { open: false };
+
+function activeProject() {
+  return state.prefs.projects.find(p => p.slug === state.prefs.activeProject) || null;
+}
+
+const HEALTH_LABEL = { green: 'On track', amber: 'At risk', red: 'Off track' };
+
+function projectChips(p) {
+  const health = ['green', 'amber', 'red'].includes(p.health) ? p.health : 'unknown';
+  const dot = `<span class="project-health ${health}" title="${esc(HEALTH_LABEL[health] || 'Health not set')}"></span>`;
+  const phase = p.phase ? `<span class="project-phase">${esc(p.phase)}</span>` : '';
+  return dot + phase;
+}
+
+function renderProjectSwitcher() {
+  const el = document.getElementById('project-switcher');
+  if (!el) return;
+  const p = activeProject();
+  el.innerHTML = p
+    ? `${projectChips(p)}<span class="project-switcher-title">${esc(p.title)}</span>${IC.chevron}`
+    : `<span class="project-switcher-title">${state.prefs.projects.length ? 'Choose project' : 'Projects'}</span>${IC.chevron}`;
+  el.title = p ? (p.oneLiner || p.title) : 'Choose or import a project';
+}
+
+// Native web views sit above the page, so hide them while the menu is open
+function hideNativeViews() {
+  for (const t of state.tabs) if (t.viewId) window.api.browserHide(t.viewId);
+  for (const sec of Object.values(SECTIONS)) for (const t of sec.s.tabs) if (t.viewId) window.api.browserHide(t.viewId);
+  window.api.workbenchHide();
+}
+
+function restoreNativeViews() {
+  const section = document.querySelector('.nav-tab.active')?.dataset.section;
+  if (section === 'build') {
+    const active = state.tabs.find(t => t.id === state.activeTabId);
+    if (active?.viewId) positionBrowserView(active);
+  } else if (SECTIONS[section]) {
+    const sec = SECTIONS[section];
+    const active = sec.s.tabs.find(t => t.id === sec.s.activeTabId);
+    if (active?.viewId) sec._positionBrowserView(active);
+  }
+  positionWorkbench();
+}
+
+function closeProjectMenu() {
+  document.getElementById('project-menu')?.remove();
+  if (!projectMenu.open) return;
+  projectMenu.open = false;
+  restoreNativeViews();
+}
+
+function openProjectMenu() {
+  if (projectMenu.open) { closeProjectMenu(); return; }
+  projectMenu.open = true;
+  hideNativeViews();
+
+  const menu = document.createElement('div');
+  menu.id = 'project-menu';
+  menu.className = 'project-menu';
+  for (const p of state.prefs.projects) {
+    const item = document.createElement('button');
+    item.className = `project-menu-item${p.slug === state.prefs.activeProject ? ' active' : ''}`;
+    item.dataset.slug = p.slug;
+    item.disabled = !p.root;
+    item.title = p.root ? p.root : 'No local folder found for this project';
+    item.innerHTML = `${projectChips(p)}<span class="project-menu-title">${esc(p.title)}</span>`;
+    item.onclick = () => { closeProjectMenu(); selectProject(p.slug); };
+    menu.appendChild(item);
+  }
+  if (state.prefs.projects.length) {
+    const sep = document.createElement('div');
+    sep.className = 'project-menu-sep';
+    menu.appendChild(sep);
+  }
+  const actions = [['Import from Portfolio…', () => runProjectImport({ pick: true })]];
+  if (state.prefs.portfolioDir) actions.push(['Re-import projects', () => runProjectImport({})]);
+  actions.push(['Add project folder…', () => runAddProjectFolder()]);
+  if (activeProject() && state.currentDir) actions.push(['Use current folder as project folder', pinProjectRoot]);
+  for (const [label, fn] of actions) {
+    const item = document.createElement('button');
+    item.className = 'project-menu-item action';
+    item.textContent = label;
+    item.onclick = () => { closeProjectMenu(); fn(); };
+    menu.appendChild(item);
+  }
+
+  const r = document.getElementById('project-switcher').getBoundingClientRect();
+  menu.style.left = `${r.left}px`;
+  menu.style.top = `${r.bottom + 2}px`;
+  document.body.appendChild(menu);
+}
+
+async function selectProject(slug) {
+  const p = state.prefs.projects.find(x => x.slug === slug);
+  if (!p || !p.root) return;
+  state.prefs.activeProject = slug;
+  state.rootDir = p.root;
+  await navigateTo(p.root);   // saves prefs
+  for (const sec of Object.values(SECTIONS)) sec.setRoot(p.root);
+  renderProjectSwitcher();
+  for (const sec of Object.values(SECTIONS)) {
+    const home = sec.s.tabs.find(t => t.type === 'home');
+    if (home) showHome(sec, home);
+  }
+}
+
+async function pinProjectRoot() {
+  const p = activeProject();
+  if (!p || !state.currentDir) return;
+  p.root = state.currentDir;
+  p.rootPinned = true;
+  await selectProject(p.slug);
+}
+
+async function runProjectImport({ pick = false, portfolioDir, workspaceRoot } = {}) {
+  const result = await window.api.projectsImport({
+    portfolioDir: portfolioDir ?? state.prefs.portfolioDir,
+    workspaceRoot: workspaceRoot ?? state.prefs.workspaceRoot,
+    existing: state.prefs.projects,
+    pick,
+  });
+  if (!result || result.error) return;   // cancelled, or refused (main shows why)
+  state.prefs.portfolioDir = result.portfolioDir;
+  state.prefs.workspaceRoot = result.workspaceRoot;
+  state.prefs.projects = result.projects;
+  if (!activeProject()) state.prefs.activeProject = null;
+  await savePrefs();
+  renderProjectSwitcher();
+  renderStarredSection();
+}
+
+// Add one folder as a project (Projects → Add Project Folder…). `dir` skips
+// the folder picker (tests).
+async function runAddProjectFolder(dir) {
+  const result = await window.api.projectsAddFolder({ existing: state.prefs.projects, dir });
+  if (!result) return;
+  state.prefs.projects = result.projects;
+  await savePrefs();
+  await selectProject(result.project.slug);
+  renderProjectSwitcher();
+}
+
+// The active project's folder and repos, at the top of the Build sidebar
+function renderProjectRepos(container) {
+  const p = activeProject();
+  if (!p) return;
+  const label = document.createElement('div');
+  label.className = 'starred-label';
+  label.textContent = `Project · ${p.title}`;
+  container.appendChild(label);
+
+  const rows = [{ name: window.api.basename(p.root), path: p.root, isRoot: true }]
+    .concat(p.repos.map(r => ({ name: r.repo.split('/')[1], path: r.path, repo: r.repo })));
+  for (const r of rows) {
+    if (!r.isRoot && r.path === p.root) continue;
+    const row = document.createElement('div');
+    row.className = `starred-row project-repo${r.path ? '' : ' missing'}${r.path && state.currentDir === r.path ? ' active' : ''}`;
+    row.title = r.path || `Not checked out in your workspace folder: ${r.repo}`;
+    row.innerHTML = `<span class="project-repo-icon">${r.isRoot ? IC.folderOpen : IC.folder}</span>
+      <span class="starred-row-name">${esc(r.name)}</span>`;
+    if (r.path) row.onclick = () => { state.rootDir = p.root; navigateTo(r.path); };
+    container.appendChild(row);
+  }
+  const div = document.createElement('div');
+  div.className = 'starred-divider';
+  container.appendChild(div);
+}
+
+function initProjects() {
+  const btn = document.getElementById('project-switcher');
+  btn.addEventListener('click', openProjectMenu);
+  document.addEventListener('mousedown', e => {
+    if (projectMenu.open && !e.target.closest('#project-menu') && !e.target.closest('#project-switcher')) closeProjectMenu();
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && projectMenu.open) closeProjectMenu(); });
+  window.api.onProjectsCommand(({ type }) => (type === 'add-folder' ? runAddProjectFolder() : runProjectImport({ pick: type === 'import' })));
+  renderProjectSwitcher();
+}
+
 // ── Top-level navigation ──────────────────────────────────────────────────
 function initTopNav() {
   const tabs = document.querySelectorAll('.nav-tab');
@@ -2379,6 +3036,7 @@ function initTopNav() {
     tab.addEventListener('click', () => {
       const section = tab.dataset.section;
       tabs.forEach(t => t.classList.toggle('active', t === tab));
+      scheduleSessionSave();
       document.querySelectorAll('.section-pane').forEach(pane => {
         pane.classList.toggle('active', pane.id === `section-${section}`);
       });

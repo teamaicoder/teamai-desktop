@@ -14,6 +14,10 @@ TeamAICoder gives every project one window, organised by stage of the lifecycle:
 - **Chat + Preview.** A terminal for your agent on the left and a live preview on the right, with a draggable divider. Ask the agent to edit a SharePoint or Google Docs file and watch the change land beside the chat.
 - **Markdown-first editing.** WYSIWYG and source modes, live reload when an agent edits the file, and links between markdown files that work.
 - **Code editor.** CodeMirror with syntax highlighting for common languages.
+- **Projects.** Import your projects from a portfolio folder of markdown files. The project switcher in the top bar opens a project's folder in every section and lists its repos, matched to the checkouts on your disk.
+- **Picks up where you left off.** Relaunching reopens your tabs in every section: files, terminals (in the folder they were in), browser and Chat + Preview tabs. A terminal that was running `claude` resumes it with `claude --continue`.
+- **Pages open inside the app.** Tools run in an app terminal that open a browser (Python's `webbrowser`, `$BROWSER file.html`, `teamai-open`) show the page in the app's preview, beside the terminal, instead of in your normal browser.
+- **Status boards.** Pin a status page as the first tab of a section (Plan & Track by default): it refreshes in the background each time you open the section, and can switch between all projects and the active one.
 - **Starred folders**, so you can jump between projects quickly.
 
 ## Quick start

@@ -9,9 +9,16 @@ const {
   loadPrefs, savePrefs, normalizeWorkbenchUrl,
   chromeUserAgent, windowOpenTarget,
   FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
+  importProjects, addFolderProject,
+  parseOpenRequest,
+  parseRenderedPage, fillProjectCommand, outputTail,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('./main/handlers');
+const { applyPtyInfo, isClaudeCommand, parseLsofCwd } = require('./renderer/session');
+const net = require('net');
+const os = require('os');
+const { execFile, execFileSync } = require('child_process');
 
 console.log('[main] starting, electron', process.versions.electron, 'node', process.versions.node);
 
@@ -125,8 +132,61 @@ function createWindow() {
   if (!IS_TEST && !app.isPackaged) win.webContents.openDevTools({ mode: 'detach' });
 }
 
+// ── Open-in-preview socket ────────────────────────────────────────────────────
+// teamai-open (BROWSER in every terminal) sends one JSON line { url, ptyId };
+// http(s) and file URLs go to the renderer, which opens them in the preview of
+// the tab that owns that terminal. The socket is only reachable by this user.
+let openSocketPath = null;
+
+function socketPathFor(dir) {
+  const p = path.join(dir, 'tac.sock');
+  // Unix socket paths are limited to ~104 bytes on macOS
+  return Buffer.byteLength(p) < 100 ? p : path.join(os.tmpdir(), `tac-${process.pid}.sock`);
+}
+
+function startOpenSocket() {
+  const sockPath = socketPathFor(app.getPath('userData'));
+  try { fs.unlinkSync(sockPath); } catch {}
+  const server = net.createServer(conn => {
+    let buf = '';
+    conn.setEncoding('utf8');
+    conn.setTimeout(5000, () => conn.destroy());
+    conn.on('data', chunk => {
+      buf += chunk;
+      if (buf.length > 16384) return conn.destroy();
+      const nl = buf.indexOf('\n');
+      if (nl < 0) return;
+      const req = parseOpenRequest(buf.slice(0, nl));
+      const win = BrowserWindow.getAllWindows()[0];
+      if (!req || !win || !rendererReady) {
+        conn.end(JSON.stringify({ ok: false }) + '\n');
+        return;
+      }
+      console.log(`[main] preview:open ${req.url} pty=${req.ptyId}`);
+      win.webContents.send('preview:open', req);
+      conn.end(JSON.stringify({ ok: true }) + '\n');
+    });
+    conn.on('error', () => {});
+  });
+  server.on('error', e => {
+    console.warn('[main] open socket error:', e.message);
+    openSocketPath = null;  // teamai-open then falls back to the system browser
+  });
+  // Set before listening so the first terminals already get the path
+  openSocketPath = sockPath;
+  server.listen(sockPath, () => {
+    try { fs.chmodSync(sockPath, 0o600); } catch {}
+    console.log('[main] open socket:', sockPath);
+  });
+  app.on('will-quit', () => {
+    try { server.close(); } catch {}
+    try { fs.unlinkSync(sockPath); } catch {}
+  });
+}
+
 app.whenReady().then(() => {
   console.log('[main] app ready, creating window');
+  startOpenSocket();
   // The packaged app takes its icon from the bundle; when run from source, set the Dock icon here
   if (process.platform === 'darwin' && !app.isPackaged) app.dock.setIcon(path.join(__dirname, 'build', 'icon.png'));
   addWorkbenchMenu();
@@ -180,6 +240,120 @@ ipcMain.handle('prefs:save', (_, data) => {
   catch (e) { console.error('[main] prefs:save failed:', e.message); }
 });
 
+// ── Projects ──────────────────────────────────────────────────────────────────
+
+// Where project checkouts are looked for when none has been chosen
+function defaultWorkspaceRoot() {
+  const home = app.getPath('home');
+  const workspace = path.join(home, 'workspace');
+  return fs.existsSync(workspace) ? workspace : home;
+}
+
+// Import projects from a portfolio. With pick (or nothing remembered) the user
+// chooses the portfolio folder, and on first import the workspace folder too.
+// Returns { portfolioDir, workspaceRoot, projects } or null when cancelled.
+ipcMain.handle('projects:import', async (event, { portfolioDir, workspaceRoot, existing, pick } = {}) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (pick || !portfolioDir) {
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Choose your portfolio folder',
+      message: 'The folder of project files (<slug>.md), or the repo that contains portfolio/',
+      defaultPath: portfolioDir || defaultWorkspaceRoot(),
+      properties: ['openDirectory'],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    portfolioDir = res.filePaths[0];
+  }
+  if (!workspaceRoot) {
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Choose your workspace folder',
+      message: 'The folder your project checkouts live under',
+      defaultPath: defaultWorkspaceRoot(),
+      properties: ['openDirectory'],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    workspaceRoot = res.filePaths[0];
+  }
+  let projects;
+  try {
+    projects = importProjects({ portfolioDir, workspaceRoot, existing });
+  } catch (e) {
+    console.warn(`[main] projects:import refused: ${e.message}`);
+    if (process.env.NODE_ENV !== 'test') {
+      await dialog.showMessageBox(win, { type: 'warning', message: 'No projects imported', detail: e.message });
+    }
+    return { error: e.message };
+  }
+  console.log(`[main] projects:import ${projects.length} projects from ${portfolioDir}`);
+  return { portfolioDir, workspaceRoot, projects };
+});
+
+// Add one folder as a project (for a repo that isn't in the portfolio).
+// With dir given (tests), no dialog is shown.
+ipcMain.handle('projects:add-folder', async (event, { existing, dir } = {}) => {
+  if (!dir) {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Add a project folder',
+      message: 'A project folder: a repo, or a folder of repos',
+      defaultPath: defaultWorkspaceRoot(),
+      properties: ['openDirectory'],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    dir = res.filePaths[0];
+  }
+  const result = addFolderProject(existing, dir);
+  console.log(`[main] projects:add-folder ${result.project.slug} from ${dir}`);
+  return result;
+});
+
+// ── Section home: status board refresh ────────────────────────────────────────
+// Runs a section's configured refresh command (from prefs on disk, never from
+// the renderer) in the user's login shell. One run at a time per section/mode/
+// project: a second request while one runs gets the same result.
+const HOME_TIMEOUT_MS = 90 * 1000;
+const homeRuns = new Map();
+
+function runShell(command, cwd) {
+  const shell = process.env.SHELL || '/bin/sh';
+  return new Promise(resolve => {
+    execFile(shell, ['-lc', command], { cwd, timeout: HOME_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
+      (err, stdout, stderr) => resolve({
+        code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
+        timedOut: !!(err && err.killed),
+        stdout: stdout || '', stderr: stderr || '',
+      }));
+  });
+}
+
+async function refreshHome(section, mode, root) {
+  const cfg = loadPrefs(prefsPath).sectionHome[section];
+  if (!cfg) return { ok: false, error: 'No status board is set for this section.' };
+  const project = mode === 'project';
+  const command = project ? (cfg.projectRefresh && root ? fillProjectCommand(cfg.projectRefresh, root) : null) : cfg.refresh;
+  if (project && !command) return { ok: false, error: cfg.projectRefresh ? 'No active project.' : 'No project command is set.' };
+  if (!command) return { ok: !!cfg.page, url: cfg.page, error: cfg.page ? null : 'No page is set.' };
+
+  const cwd = project ? root : os.homedir();
+  console.log(`[main] home:refresh ${section}/${mode} cwd="${cwd}"`);
+  const res = await runShell(command, fs.existsSync(cwd) ? cwd : os.homedir());
+  if (res.timedOut) return { ok: false, error: `The refresh command timed out after ${HOME_TIMEOUT_MS / 1000} s.` };
+  if (res.code !== 0) return { ok: false, error: outputTail(res.stderr) || outputTail(res.stdout) || `The refresh command failed (exit ${res.code}).` };
+  const url = project ? parseRenderedPage(res.stdout) : (cfg.page || parseRenderedPage(res.stdout));
+  if (!url) return { ok: false, error: 'The command finished but didn\'t print the path of the page it wrote.' };
+  return { ok: true, url, error: null };
+}
+
+ipcMain.handle('home:refresh', (_, { section, mode, root } = {}) => {
+  const key = `${section}:${mode}:${root || ''}`;
+  if (homeRuns.has(key)) return homeRuns.get(key);
+  const run = refreshHome(section, mode, root)
+    .catch(e => ({ ok: false, error: e.message }))
+    .finally(() => homeRuns.delete(key));
+  homeRuns.set(key, run);
+  return run;
+});
+
 // ── Git ───────────────────────────────────────────────────────────────────────
 
 ipcMain.handle('git:branch', async (_, dirPath) => {
@@ -207,6 +381,11 @@ ipcMain.handle('dialog:openFile', async (_, { defaultPath }) => {
 });
 
 // ── File management ───────────────────────────────────────────────────────────
+
+ipcMain.handle('fs:exists', (_, p) => {
+  try { const st = fs.statSync(p); return { exists: true, isDir: st.isDirectory() }; }
+  catch { return { exists: false, isDir: false }; }
+});
 
 ipcMain.handle('fs:rename', (_, { oldPath, newPath }) => {
   console.log(`[main] fs:rename "${oldPath}" → "${newPath}"`);
@@ -335,13 +514,31 @@ ipcMain.handle('fs:unwatch', (_, filePath) => {
 const ptys = new Map();
 let ptySeq = 0;
 
+// Every terminal can open pages in the app's preview: BROWSER points at the
+// teamai-open helper, which reaches the socket below (see CLAUDE.md).
+function teamaiOpenPath() {
+  const p = path.join(__dirname, 'scripts', 'teamai-open');
+  return app.isPackaged ? p.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`) : p;
+}
+
+function terminalEnv(ptyId) {
+  const env = {
+    BROWSER: teamaiOpenPath(),
+    TEAMAICODER_PTY_ID: String(ptyId),
+    TEAMAICODER_NODE: process.execPath,
+  };
+  if (openSocketPath) env.TEAMAICODER_SOCKET = openSocketPath;
+  return env;
+}
+
 ipcMain.handle('pty:spawn', (event, { cwd }) => {
   // Fall back to homedir if the requested cwd no longer exists (e.g. cleaned-up temp dirs)
-  const actualCwd = (cwd && fs.existsSync(cwd)) ? cwd : require('os').homedir();
+  const actualCwd = (cwd && fs.existsSync(cwd)) ? cwd : os.homedir();
   if (actualCwd !== cwd) console.warn(`[main] pty:spawn cwd="${cwd}" not found, using homedir`);
   console.log(`[main] pty:spawn cwd="${actualCwd}"`);
+  const seq = ++ptySeq;
   const id = ptySpawn(
-    nodePty, ptys, ++ptySeq, { cwd: actualCwd },
+    nodePty, ptys, seq, { cwd: actualCwd, env: terminalEnv(seq) },
     (id, data) => { try { event.sender.send('pty:data', { id, data }); } catch { } },
     (id)       => {
       console.log(`[main] pty:exit id=${id}`);
@@ -360,6 +557,70 @@ ipcMain.on('pty:resize', (_, { id, cols, rows })   => {
 ipcMain.on('pty:kill',   (_, { id })               => {
   console.log(`[main] pty:kill id=${id}`);
   ptyKill(ptys, id);
+});
+
+// A terminal's current folder and whether Claude Code is its foreground
+// process, read from the shell's pid (ps / lsof). Used to save the session.
+function runAsync(cmd, args) {
+  return new Promise(resolve => {
+    execFile(cmd, args, { encoding: 'utf8', timeout: 1500 }, (err, out) => resolve(err ? '' : out));
+  });
+}
+function runSync(cmd, args) {
+  try { return execFileSync(cmd, args, { encoding: 'utf8', timeout: 1500 }); } catch { return ''; }
+}
+function cwdOf(pid, out) {
+  if (process.platform === 'linux') {
+    try { return fs.readlinkSync(`/proc/${pid}/cwd`); } catch { return null; }
+  }
+  return parseLsofCwd(out);
+}
+async function ptyInfo(pty) {
+  const pid = pty.pid;
+  const tpgid = parseInt((await runAsync('ps', ['-o', 'tpgid=', '-p', String(pid)])).trim(), 10);
+  const fg = tpgid > 0 && tpgid !== pid ? await runAsync('ps', ['-o', 'args=', '-p', String(tpgid)]) : '';
+  const lsof = process.platform === 'linux' ? '' : await runAsync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']);
+  return { cwd: cwdOf(pid, lsof), claude: isClaudeCommand(fg) };
+}
+function ptyInfoSync(pty) {
+  const pid = pty.pid;
+  const tpgid = parseInt(runSync('ps', ['-o', 'tpgid=', '-p', String(pid)]).trim(), 10);
+  const fg = tpgid > 0 && tpgid !== pid ? runSync('ps', ['-o', 'args=', '-p', String(tpgid)]) : '';
+  const lsof = process.platform === 'linux' ? '' : runSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']);
+  return { cwd: cwdOf(pid, lsof), claude: isClaudeCommand(fg) };
+}
+
+ipcMain.handle('pty:info', async (_, ids) => {
+  const out = {};
+  await Promise.all((Array.isArray(ids) ? ids : []).map(async id => {
+    const pty = ptys.get(String(id));
+    if (pty) out[id] = await ptyInfo(pty);
+  }));
+  return out;
+});
+
+// On quit, refresh the saved session's terminals from the live shells, so a
+// `claude` still running at quit is resumed next launch.
+let sessionFinalised = false;
+app.on('before-quit', () => {
+  if (sessionFinalised) return;
+  sessionFinalised = true;
+  try {
+    if (!fs.existsSync(prefsPath)) return;
+    const data = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    if (!data.session) return;
+    const info = {};
+    for (const sec of Object.values(data.session.sections || {})) {
+      for (const e of sec.tabs || []) {
+        const pty = e.ptyId != null && ptys.get(String(e.ptyId));
+        if (pty) info[e.ptyId] = ptyInfoSync(pty);
+      }
+    }
+    applyPtyInfo(data.session, info);
+    savePrefs(prefsPath, data);
+  } catch (e) {
+    console.warn('[main] session refresh on quit failed:', e.message);
+  }
 });
 
 // ── Browser (WebContentsView) ─────────────────────────────────────────────────
@@ -589,6 +850,21 @@ function addWorkbenchMenu() {
     submenu: [
       { id: 'workbench-set-url', label: 'Set Workbench URL…', click: () => sendToWindows('workbench:configure', {}) },
       { id: 'workbench-reload', label: 'Reload Workbench', click: () => workbenchView?.webContents.reload() },
+    ],
+  }));
+  menu.append(new MenuItem({
+    label: 'Plan & Track',
+    submenu: [
+      { id: 'home-plan-set', label: 'Set Status Board…', click: () => sendToWindows('home:configure', { section: 'plan' }) },
+      { id: 'home-plan-clear', label: 'Clear Status Board', click: () => sendToWindows('home:clear', { section: 'plan' }) },
+    ],
+  }));
+  menu.append(new MenuItem({
+    label: 'Projects',
+    submenu: [
+      { id: 'projects-import', label: 'Import from Portfolio…', click: () => sendToWindows('projects:command', { type: 'import' }) },
+      { id: 'projects-reimport', label: 'Re-import Projects', click: () => sendToWindows('projects:command', { type: 'reimport' }) },
+      { id: 'projects-add-folder', label: 'Add Project Folder…', click: () => sendToWindows('projects:command', { type: 'add-folder' }) },
     ],
   }));
   Menu.setApplicationMenu(menu);

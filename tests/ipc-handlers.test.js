@@ -9,9 +9,19 @@ const {
   loadPrefs, savePrefs, normalizeWorkbenchUrl, normalizeSplitRatio,
   chromeUserAgent, windowOpenTarget,
   SIGN_IN_FIREFOX_UA, FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
+  parseFrontmatter, normalizeRepo, readPortfolio, originUrl, scanWorkspace,
+  projectRoot, resolveProjects, mergeProjects, importProjects,
+  projectFromFolder, addFolderProject,
+  previewOpenUrl, parseOpenRequest,
+  normalizePageUrl, normalizeSectionHome, parseRenderedPage, shellQuote, fillProjectCommand, outputTail,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('../main/handlers');
+const {
+  restorableUrl, serializeTab, serializeTabs, normalizeSession,
+  claudeContinueKeys, applyPtyInfo, isClaudeCommand, parseLsofCwd,
+} = require('../renderer/session');
+const { normalizeOpenTarget, sendToApp } = require('../scripts/teamai-open.js');
 
 // ── Dependency smoke tests (catches the class of bug that broke the preload) ─
 // These run in Node — same require() resolution the main/preload processes use.
@@ -317,6 +327,13 @@ describe('windowOpenTarget', () => {
 
 // ── loadPrefs ─────────────────────────────────────────────────────────────────
 
+// Project fields every loaded prefs object has
+// (and the default saved session)
+const NO_PROJECTS = {
+  projects: [], activeProject: null, portfolioDir: null, workspaceRoot: null,
+  session: normalizeSession(null), restoreClaude: true, sectionHome: {},
+};
+
 describe('loadPrefs', () => {
   let tmp;
   beforeEach(() => { tmp = mkTmp(); });
@@ -324,25 +341,25 @@ describe('loadPrefs', () => {
 
   test('returns defaults when file does not exist', () => {
     const p = path.join(tmp, 'prefs.json');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4 });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4, ...NO_PROJECTS });
   });
 
   test('parses starredFolders and lastOpenFolder correctly', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, JSON.stringify({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a' }));
-    expect(loadPrefs(p)).toEqual({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a', sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4 });
+    expect(loadPrefs(p)).toEqual({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a', sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4, ...NO_PROJECTS });
   });
 
   test('returns defaults for corrupt JSON', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, 'not valid json {{{{');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4 });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4, ...NO_PROJECTS });
   });
 
   test('returns defaults for an empty file', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, '');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4 });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4, ...NO_PROJECTS });
   });
 
   test('keeps a valid workbenchUrl and drops an invalid one', () => {
@@ -398,14 +415,14 @@ describe('savePrefs', () => {
     const p = path.join(tmp, 'prefs.json');
     const data = { starredFolders: ['/a', '/b'], lastOpenFolder: '/b' };
     savePrefs(p, data);
-    expect(loadPrefs(p)).toEqual({ ...data, sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4 });
+    expect(loadPrefs(p)).toEqual({ ...data, sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4, ...NO_PROJECTS });
   });
 
   test('overwrites previous prefs on second save', () => {
     const p = path.join(tmp, 'prefs.json');
     savePrefs(p, { starredFolders: ['/old'], lastOpenFolder: '/old' });
     savePrefs(p, { starredFolders: [], lastOpenFolder: '/new' });
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: '/new', sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4 });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: '/new', sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4, ...NO_PROJECTS });
   });
 });
 
@@ -550,4 +567,607 @@ describe('PTY handlers', () => {
     );
     setTimeout(() => ptyKill(ptys, id), 200);
   }, 5000);
+});
+
+// ── Projects ──────────────────────────────────────────────────────────────────
+
+// A checkout whose origin remote points at owner/name
+function makeCheckout(dir, remote) {
+  fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.git', 'config'),
+    `[core]\n\tbare = false\n[remote "origin"]\n\turl = ${remote}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n`);
+}
+
+function writeProject(dir, name, frontmatter) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, name), `---\n${frontmatter}\n---\n\n# Notes\n`);
+}
+
+describe('parseFrontmatter', () => {
+  test('reads scalars and lists, stripping comments only from repo lines', () => {
+    const fm = parseFrontmatter([
+      '---',
+      'slug: alpha',
+      'title: "Alpha App"',
+      'phase: build',
+      'repos:',
+      '  - github.com/example-org/alpha-app  # PUBLIC — the app',
+      '  - github.com/example-org/alpha-infra# PRIVATE',
+      'readiness:',
+      '  vision: done',
+      'blockers:',
+      '  - Waiting on issue #12',
+      '---',
+      'body',
+    ].join('\n'));
+    expect(fm.slug).toBe('alpha');
+    expect(fm.title).toBe('Alpha App');
+    expect(fm.repos).toEqual(['github.com/example-org/alpha-app', 'github.com/example-org/alpha-infra']);
+    expect(fm.blockers).toEqual(['Waiting on issue #12']);
+  });
+
+  test('returns {} without frontmatter', () => {
+    expect(parseFrontmatter('# Just a heading')).toEqual({});
+  });
+});
+
+describe('normalizeRepo', () => {
+  test.each([
+    ['github.com/example-org/alpha', 'example-org/alpha'],
+    ['example-org/alpha', 'example-org/alpha'],
+    ['https://github.com/example-org/alpha.git', 'example-org/alpha'],
+    ['git@github.com:example-org/alpha.git', 'example-org/alpha'],
+    ['ssh://git@github.com/example-org/alpha', 'example-org/alpha'],
+    ['github.com/example-org/alpha/', 'example-org/alpha'],
+  ])('%s → %s', (input, expected) => {
+    expect(normalizeRepo(input)).toBe(expected);
+  });
+
+  test.each([
+    'The pinout is a provisional guess from photos',
+    'github.com/example-org/a, b, c',
+    'github.com/example-org',
+    '',
+    null,
+  ])('rejects %p', input => {
+    expect(normalizeRepo(input)).toBeNull();
+  });
+});
+
+describe('readPortfolio', () => {
+  let dir;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'portfolio-')); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test('reads project files from portfolio/ and skips the README and prose repo lines', () => {
+    const folder = path.join(dir, 'portfolio');
+    writeProject(folder, 'alpha.md', 'slug: alpha\ntitle: Alpha\none_liner: The first one\nphase: build\nhealth: green\nrepos:\n  - github.com/example-org/alpha-app\n  - Mechanicals came from photos, not a scan');
+    writeProject(folder, 'beta.md', 'title: Beta\nhealth: amber\nrepos:\n  - example-org/beta');
+    fs.writeFileSync(path.join(folder, 'README.md'), '# Portfolio\n');
+    const projects = readPortfolio(dir);
+    expect(projects).toEqual([
+      { slug: 'alpha', title: 'Alpha', oneLiner: 'The first one', phase: 'build', health: 'green', oss: '', repos: ['example-org/alpha-app'] },
+      { slug: 'beta', title: 'Beta', oneLiner: '', phase: '', health: 'amber', oss: '', repos: ['example-org/beta'] },
+    ]);
+  });
+
+  test('accepts the portfolio folder itself', () => {
+    writeProject(dir, 'gamma.md', 'slug: gamma\ntitle: Gamma\nrepos:\n  - example-org/gamma');
+    expect(readPortfolio(dir).map(p => p.slug)).toEqual(['gamma']);
+  });
+
+  test('missing folder → []', () => {
+    expect(readPortfolio(path.join(dir, 'nope'))).toEqual([]);
+  });
+});
+
+describe('originUrl', () => {
+  let dir;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'origin-')); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test('reads origin from .git/config', () => {
+    makeCheckout(dir, 'git@github.com:example-org/alpha.git');
+    expect(originUrl(dir)).toBe('git@github.com:example-org/alpha.git');
+  });
+
+  test('follows a .git file to a worktree common dir', () => {
+    const main = path.join(dir, 'main');
+    makeCheckout(main, 'https://github.com/example-org/alpha.git');
+    const wtGit = path.join(main, '.git', 'worktrees', 'wt');
+    fs.mkdirSync(wtGit, { recursive: true });
+    fs.writeFileSync(path.join(wtGit, 'commondir'), '../..\n');
+    const wt = path.join(dir, 'wt');
+    fs.mkdirSync(wt);
+    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${wtGit}\n`);
+    expect(originUrl(wt)).toBe('https://github.com/example-org/alpha.git');
+  });
+
+  test('no repo or no origin → null', () => {
+    expect(originUrl(dir)).toBeNull();
+    fs.mkdirSync(path.join(dir, '.git'));
+    fs.writeFileSync(path.join(dir, '.git', 'config'), '[core]\n\tbare = false\n');
+    expect(originUrl(dir)).toBeNull();
+  });
+});
+
+describe('scanWorkspace', () => {
+  let ws;
+  beforeEach(() => { ws = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-')); });
+  afterEach(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+  test('maps owner/name to checkouts, nested ones included, skipping hidden and dependency folders', () => {
+    makeCheckout(path.join(ws, 'alpha', 'app'), 'git@github.com:example-org/alpha-app.git');
+    makeCheckout(path.join(ws, 'alpha', 'app', 'web'), 'https://github.com/example-org/alpha-web.git');
+    makeCheckout(path.join(ws, 'beta'), 'https://github.com/example-org/beta');
+    makeCheckout(path.join(ws, 'beta', '.claude', 'worktrees', 'x'), 'https://github.com/example-org/hidden');
+    makeCheckout(path.join(ws, 'beta', 'node_modules', 'dep'), 'https://github.com/example-org/dep');
+    makeCheckout(path.join(ws, 'a', 'b', 'c', 'd', 'e'), 'https://github.com/example-org/too-deep');
+    expect(scanWorkspace(ws)).toEqual({
+      'example-org/alpha-app': path.join(ws, 'alpha', 'app'),
+      'example-org/alpha-web': path.join(ws, 'alpha', 'app', 'web'),
+      'example-org/beta': path.join(ws, 'beta'),
+    });
+  });
+
+  test('keeps the shallowest checkout of a repo', () => {
+    makeCheckout(path.join(ws, 'x', 'copy'), 'https://github.com/example-org/alpha');
+    makeCheckout(path.join(ws, 'alpha'), 'https://github.com/example-org/alpha');
+    expect(scanWorkspace(ws)['example-org/alpha']).toBe(path.join(ws, 'alpha'));
+  });
+});
+
+describe('projectRoot', () => {
+  let ws;
+  beforeEach(() => { ws = fs.mkdtempSync(path.join(os.tmpdir(), 'root-')); });
+  afterEach(() => fs.rmSync(ws, { recursive: true, force: true }));
+
+  test('<workspace>/<slug> when it holds every checkout', () => {
+    fs.mkdirSync(path.join(ws, 'alpha', 'app'), { recursive: true });
+    expect(projectRoot('alpha', [path.join(ws, 'alpha', 'app')], ws)).toBe(path.join(ws, 'alpha'));
+  });
+
+  test('deepest common folder otherwise', () => {
+    const a = path.join(ws, 'group', 'one');
+    const b = path.join(ws, 'group', 'two');
+    expect(projectRoot('beta', [a, b], ws)).toBe(path.join(ws, 'group'));
+    expect(projectRoot('beta', [a], ws)).toBe(a);
+  });
+
+  test('never the workspace itself', () => {
+    expect(projectRoot('gamma', [path.join(ws, 'one'), path.join(ws, 'two')], ws)).toBeNull();
+    fs.mkdirSync(path.join(ws, 'gamma'));
+    expect(projectRoot('gamma', [path.join(ws, 'one'), path.join(ws, 'two')], ws)).toBe(path.join(ws, 'gamma'));
+  });
+
+  test('no checkouts: <workspace>/<slug> if it exists, else null', () => {
+    expect(projectRoot('delta', [], ws)).toBeNull();
+    fs.mkdirSync(path.join(ws, 'delta'));
+    expect(projectRoot('delta', [], ws)).toBe(path.join(ws, 'delta'));
+  });
+});
+
+describe('resolveProjects / mergeProjects / importProjects', () => {
+  let tmp, ws, portfolio;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'import-'));
+    ws = path.join(tmp, 'ws');
+    portfolio = path.join(tmp, 'specs', 'portfolio');
+    makeCheckout(path.join(ws, 'alpha', 'app'), 'git@github.com:example-org/alpha-app.git');
+    makeCheckout(path.join(ws, 'alpha', 'infra'), 'git@github.com:example-org/alpha-infra.git');
+    writeProject(portfolio, 'alpha.md', 'slug: alpha\ntitle: Alpha\nrepos:\n  - github.com/example-org/alpha-app\n  - github.com/example-org/alpha-infra\n  - github.com/example-org/alpha-docs');
+    writeProject(portfolio, 'beta.md', 'slug: beta\ntitle: Beta\nrepos:\n  - github.com/example-org/beta');
+  });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  test('matches repos to checkouts and flags missing ones', () => {
+    const [alpha, beta] = importProjects({ portfolioDir: path.join(tmp, 'specs'), workspaceRoot: ws, existing: [] });
+    expect(alpha.root).toBe(path.join(ws, 'alpha'));
+    expect(alpha.repos).toEqual([
+      { repo: 'example-org/alpha-app', path: path.join(ws, 'alpha', 'app') },
+      { repo: 'example-org/alpha-infra', path: path.join(ws, 'alpha', 'infra') },
+      { repo: 'example-org/alpha-docs', path: null },
+    ]);
+    expect(beta.root).toBeNull();
+    expect(beta.repos).toEqual([{ repo: 'example-org/beta', path: null }]);
+  });
+
+  test('re-import keeps a pinned folder and drops projects no longer in the portfolio', () => {
+    const existing = [
+      { slug: 'alpha', title: 'Old', repos: [], root: '/pinned/alpha', rootPinned: true },
+      { slug: 'gone', title: 'Gone', repos: [], root: '/x' },
+    ];
+    const merged = importProjects({ portfolioDir: portfolio, workspaceRoot: ws, existing });
+    expect(merged.map(p => p.slug)).toEqual(['alpha', 'beta']);
+    expect(merged[0]).toMatchObject({ title: 'Alpha', root: '/pinned/alpha', rootPinned: true });
+  });
+
+  test('a folder with no project files is refused, not treated as an empty portfolio', () => {
+    const repo = path.join(tmp, 'just-a-repo');
+    makeCheckout(repo, 'git@github.com:example-org/solo.git');
+    expect(() => importProjects({ portfolioDir: repo, workspaceRoot: ws, existing: [{ slug: 'alpha', title: 'A', repos: [] }] }))
+      .toThrow(/No project files found/);
+  });
+
+  test('re-import keeps folder projects that are not in the portfolio', () => {
+    const existing = [
+      { slug: 'solo', title: 'Solo', repos: [], root: '/x/solo', source: 'folder' },
+      { slug: 'beta', title: 'Beta folder', repos: [], root: '/x/beta', source: 'folder' },
+    ];
+    const merged = importProjects({ portfolioDir: portfolio, workspaceRoot: ws, existing });
+    expect(merged.map(p => p.slug)).toEqual(['alpha', 'beta', 'solo']);
+    expect(merged[1].title).toBe('Beta');   // the portfolio wins on a shared slug
+  });
+
+  test('mergeProjects without existing projects returns the import', () => {
+    const imported = resolveProjects([{ slug: 'z', title: 'Z', repos: [] }], {}, ws);
+    expect(mergeProjects(undefined, imported)).toEqual(imported);
+  });
+});
+
+describe('projectFromFolder / addFolderProject', () => {
+  let tmp;
+  beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'folder-project-')); });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  test('takes title, phase and health from RELEASE.md and finds its checkouts', () => {
+    const dir = path.join(tmp, 'Solo App');
+    makeCheckout(dir, 'git@github.com:example-org/solo-app.git');
+    makeCheckout(path.join(dir, 'tools', 'cli'), 'https://github.com/example-org/solo-cli.git');
+    fs.writeFileSync(path.join(dir, 'RELEASE.md'), '---\nproject: Solo\nrelease: v1 beta\nphase: build\nhealth: amber\n---\n');
+    expect(projectFromFolder(dir)).toEqual({
+      slug: 'solo-app', title: 'Solo', oneLiner: 'v1 beta', phase: 'build', health: 'amber', oss: '',
+      repos: [
+        { repo: 'example-org/solo-app', path: dir },
+        { repo: 'example-org/solo-cli', path: path.join(dir, 'tools', 'cli') },
+      ],
+      root: dir, source: 'folder',
+    });
+  });
+
+  test('falls back to PRODUCT.md, then the folder name', () => {
+    const a = path.join(tmp, 'a'); fs.mkdirSync(a);
+    fs.writeFileSync(path.join(a, 'PRODUCT.md'), '---\nproduct: Product A\n---\n');
+    expect(projectFromFolder(a).title).toBe('Product A');
+    const b = path.join(tmp, 'plain'); fs.mkdirSync(b);
+    expect(projectFromFolder(b)).toMatchObject({ slug: 'plain', title: 'plain', repos: [], phase: '' });
+  });
+
+  test('addFolderProject appends, or replaces a project with the same slug', () => {
+    const dir = path.join(tmp, 'solo'); fs.mkdirSync(dir);
+    const existing = [{ slug: 'alpha', title: 'A', repos: [] }, { slug: 'solo', title: 'Old', repos: [] }];
+    const { project, projects } = addFolderProject(existing, dir);
+    expect(project.slug).toBe('solo');
+    expect(projects.map(p => p.slug)).toEqual(['alpha', 'solo']);
+    expect(projects[1].source).toBe('folder');
+  });
+});
+
+describe('loadPrefs projects', () => {
+  test('keeps project fields and drops malformed projects', () => {
+    const p = path.join(os.tmpdir(), `prefs-projects-${Date.now()}.json`);
+    fs.writeFileSync(p, JSON.stringify({
+      projects: [{ slug: 'alpha', title: 'Alpha', repos: [] }, null, { title: 'no slug' }],
+      activeProject: 'alpha', portfolioDir: '/specs', workspaceRoot: '/ws',
+    }));
+    const prefs = loadPrefs(p);
+    fs.unlinkSync(p);
+    expect(prefs.projects).toEqual([{ slug: 'alpha', title: 'Alpha', repos: [] }]);
+    expect(prefs.activeProject).toBe('alpha');
+    expect(prefs.portfolioDir).toBe('/specs');
+    expect(prefs.workspaceRoot).toBe('/ws');
+  });
+});
+
+// ── Session (renderer/session.js) ─────────────────────────────────────────────
+
+describe('session: serializeTab / serializeTabs', () => {
+  test('saves each tab type with what it needs to reopen', () => {
+    expect(serializeTab({ id: 'a', type: 'file', path: '/p/a.md', content: 'x' })).toEqual({ type: 'file', path: '/p/a.md' });
+    expect(serializeTab({ type: 'terminal', cwd: '/p', ptyId: '3' })).toEqual({ type: 'terminal', cwd: '/p', claude: false, ptyId: '3' });
+    expect(serializeTab({ type: 'browser', url: 'https://x.test/a', viewId: '1' })).toEqual({ type: 'browser', url: 'https://x.test/a' });
+    expect(serializeTab({ type: 'split', cwd: '/p', url: 'file:///p/i.html', ptyId: '4', viewId: '2' }))
+      .toEqual({ type: 'split', cwd: '/p', url: 'file:///p/i.html', claude: false, ptyId: '4' });
+  });
+
+  test('skips tabs that cannot be reopened and unsafe URLs', () => {
+    expect(serializeTab({ type: 'terminal' })).toBeNull();
+    expect(serializeTab({ type: 'file' })).toBeNull();
+    expect(serializeTab({ type: 'mystery' })).toBeNull();
+    expect(serializeTab(null)).toBeNull();
+    expect(serializeTab({ type: 'browser', url: 'javascript:alert(1)' })).toEqual({ type: 'browser', url: '' });
+  });
+
+  test('records the active tab as an index among saved tabs', () => {
+    const tabs = [
+      { id: 'x', type: 'mystery' },
+      { id: 'f', type: 'file', path: '/a' },
+      { id: 'b', type: 'browser', url: '' },
+    ];
+    expect(serializeTabs(tabs, 'b')).toEqual({ tabs: [{ type: 'file', path: '/a' }, { type: 'browser', url: '' }], active: 1 });
+    expect(serializeTabs(tabs, 'x').active).toBeNull();
+    expect(serializeTabs(undefined, null)).toEqual({ tabs: [], active: null });
+  });
+});
+
+describe('session: normalizeSession', () => {
+  test('an empty or malformed session has every section, empty, with Build active', () => {
+    for (const raw of [null, undefined, 'x', 42, { sections: 'nope' }]) {
+      const s = normalizeSession(raw);
+      expect(s.activeSection).toBe('build');
+      expect(Object.keys(s.sections).sort()).toEqual(['build', 'deploy', 'design', 'ideas', 'operate', 'plan', 'test']);
+      for (const sec of Object.values(s.sections)) expect(sec).toEqual({ tabs: [], active: null });
+    }
+  });
+
+  test('drops runtime ptyIds, bad entries and terminal tabs outside Build', () => {
+    const s = normalizeSession({
+      activeSection: 'plan',
+      sections: {
+        build: { tabs: [{ type: 'terminal', cwd: '/p', claude: true, ptyId: '9' }, { type: 'file' }, 7], active: 0 },
+        plan: { tabs: [{ type: 'terminal', cwd: '/p' }, { type: 'split', cwd: '/q', url: 'https://x.test/' }], active: 5 },
+      },
+    });
+    expect(s.activeSection).toBe('plan');
+    expect(s.sections.build).toEqual({ tabs: [{ type: 'terminal', cwd: '/p', claude: true }], active: 0 });
+    expect(s.sections.plan).toEqual({ tabs: [{ type: 'split', cwd: '/q', url: 'https://x.test/', claude: false }], active: 0 });
+  });
+
+  test('an unknown active section falls back to Build; Workbench is allowed', () => {
+    expect(normalizeSession({ activeSection: 'nowhere' }).activeSection).toBe('build');
+    expect(normalizeSession({ activeSection: 'workbench' }).activeSection).toBe('workbench');
+  });
+});
+
+describe('session: claudeContinueKeys', () => {
+  test('resumes claude only where one terminal in that folder was running it', () => {
+    const s = normalizeSession({
+      sections: {
+        build: { tabs: [
+          { type: 'terminal', cwd: '/a', claude: true },
+          { type: 'terminal', cwd: '/b', claude: true },
+          { type: 'terminal', cwd: '/c', claude: false },
+        ] },
+        ideas: { tabs: [{ type: 'split', cwd: '/b', claude: true }, { type: 'split', cwd: '/d', claude: true }] },
+      },
+    });
+    expect([...claudeContinueKeys(s)].sort()).toEqual(['build:0', 'ideas:1']);
+  });
+
+  test('empty session → no keys', () => {
+    expect(claudeContinueKeys(normalizeSession(null)).size).toBe(0);
+    expect(claudeContinueKeys(null).size).toBe(0);
+  });
+});
+
+describe('session: applyPtyInfo', () => {
+  test('refreshes cwd and claude from live terminals by ptyId', () => {
+    const s = { sections: { build: { tabs: [
+      { type: 'terminal', cwd: '/start', claude: false, ptyId: '1' },
+      { type: 'terminal', cwd: '/other', claude: true, ptyId: '2' },
+      { type: 'file', path: '/f' },
+    ] } } };
+    applyPtyInfo(s, { 1: { cwd: '/moved', claude: true }, 2: { cwd: null, claude: false } });
+    expect(s.sections.build.tabs[0]).toMatchObject({ cwd: '/moved', claude: true });
+    expect(s.sections.build.tabs[1]).toMatchObject({ cwd: '/other', claude: false });
+    expect(s.sections.build.tabs[2]).toEqual({ type: 'file', path: '/f' });
+  });
+});
+
+describe('session: isClaudeCommand / parseLsofCwd / restorableUrl', () => {
+  test('recognises native and npm Claude Code installs', () => {
+    expect(isClaudeCommand('claude')).toBe(true);
+    expect(isClaudeCommand('/home/u/.local/bin/claude --resume')).toBe(true);
+    expect(isClaudeCommand('node /usr/local/bin/claude')).toBe(true);
+    expect(isClaudeCommand('node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js')).toBe(true);
+    expect(isClaudeCommand('vim claude.md')).toBe(false);
+    expect(isClaudeCommand('python3 x.py claude')).toBe(false);
+    expect(isClaudeCommand('')).toBe(false);
+    expect(isClaudeCommand(null)).toBe(false);
+  });
+
+  test('reads the cwd from lsof -Fn output', () => {
+    expect(parseLsofCwd('p123\nfcwd\nn/some/dir\n')).toBe('/some/dir');
+    expect(parseLsofCwd('')).toBeNull();
+    expect(parseLsofCwd(undefined)).toBeNull();
+  });
+
+  test('keeps http(s) and file URLs only', () => {
+    expect(restorableUrl('https://x.test/')).toBe('https://x.test/');
+    expect(restorableUrl('file:///tmp/a.html')).toBe('file:///tmp/a.html');
+    expect(restorableUrl('data:text/html,hi')).toBe('');
+    expect(restorableUrl('')).toBe('');
+    expect(restorableUrl(null)).toBe('');
+  });
+});
+
+// ── Opening pages from terminals ──────────────────────────────────────────────
+
+describe('previewOpenUrl / parseOpenRequest', () => {
+  test('accepts http(s) and file URLs', () => {
+    expect(previewOpenUrl('https://x.test/a')).toBe('https://x.test/a');
+    expect(previewOpenUrl(' http://localhost:3000 ')).toBe('http://localhost:3000/');
+    expect(previewOpenUrl('file:///tmp/a.html')).toBe('file:///tmp/a.html');
+  });
+
+  test('rejects other schemes and junk', () => {
+    for (const u of ['javascript:alert(1)', 'data:text/html,x', 'ftp://x.test', 'not a url', '', null, 42]) {
+      expect(previewOpenUrl(u)).toBeNull();
+    }
+  });
+
+  test('parses one request line', () => {
+    expect(parseOpenRequest('{"url":"https://x.test/","ptyId":"3"}')).toEqual({ url: 'https://x.test/', ptyId: '3' });
+    expect(parseOpenRequest('{"url":"file:///a.html","ptyId":7}')).toEqual({ url: 'file:///a.html', ptyId: '7' });
+    expect(parseOpenRequest('{"url":"https://x.test/"}')).toEqual({ url: 'https://x.test/', ptyId: null });
+    expect(parseOpenRequest('{"url":"javascript:x"}')).toBeNull();
+    expect(parseOpenRequest('not json')).toBeNull();
+    expect(parseOpenRequest('null')).toBeNull();
+  });
+});
+
+describe('teamai-open: normalizeOpenTarget', () => {
+  test('passes URLs through and turns paths into file URLs', () => {
+    expect(normalizeOpenTarget('https://x.test/a?b=1')).toBe('https://x.test/a?b=1');
+    expect(normalizeOpenTarget('file:///tmp/a.html')).toBe('file:///tmp/a.html');
+    expect(normalizeOpenTarget('/tmp/report.html')).toBe('file:///tmp/report.html');
+    expect(normalizeOpenTarget('out/page.html', '/work/proj')).toBe('file:///work/proj/out/page.html');
+    expect(normalizeOpenTarget('my file.html', '/w')).toBe('file:///w/my%20file.html');
+  });
+
+  test('reports failure when the app socket is missing (so it can fall back)', async () => {
+    expect(await sendToApp(path.join(os.tmpdir(), `tac-missing-${process.pid}.sock`), { url: 'https://x.test/' })).toBe(false);
+    expect(await sendToApp(undefined, { url: 'https://x.test/' })).toBe(false);
+  });
+
+  test('rejects other schemes and empty input', () => {
+    expect(normalizeOpenTarget('javascript:alert(1)')).toBeNull();
+    expect(normalizeOpenTarget('mailto:a@b.test')).toBeNull();
+    expect(normalizeOpenTarget('')).toBeNull();
+    expect(normalizeOpenTarget(undefined)).toBeNull();
+  });
+});
+
+describe('ptySpawn env', () => {
+  test('adds extra env to the inherited environment', () => {
+    let opts;
+    const fakePty = { spawn: (shell, args, o) => { opts = o; return { onData() {}, onExit() {} }; } };
+    ptySpawn(fakePty, new Map(), 1, { cwd: os.tmpdir(), env: { BROWSER: '/x/teamai-open', TEAMAICODER_PTY_ID: '1' } }, () => {}, () => {});
+    expect(opts.env.BROWSER).toBe('/x/teamai-open');
+    expect(opts.env.TEAMAICODER_PTY_ID).toBe('1');
+    expect(opts.env.PATH).toBe(process.env.PATH);
+  });
+});
+
+describe('teamai-open: wrapper script', () => {
+  const net = require('net');
+  const { execFile } = require('child_process');
+  const script = path.join(__dirname, '..', 'scripts', 'teamai-open');
+
+  function listen(reply) {
+    const sock = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tac-sock-')), 's.sock');
+    const got = [];
+    const server = net.createServer(c => {
+      let buf = '';
+      c.on('data', d => {
+        buf += d;
+        if (buf.includes('\n')) { got.push(JSON.parse(buf.split('\n')[0])); c.end(JSON.stringify(reply) + '\n'); }
+      });
+    });
+    return new Promise(r => server.listen(sock, () => r({ server, sock, got })));
+  }
+
+  const run = (args, env, cwd) => new Promise(r => {
+    execFile(script, args, { env: { ...process.env, ...env }, cwd }, (err, stdout, stderr) => r({ code: err ? err.code : 0, stderr }));
+  });
+
+  test('sends the URL and terminal id to the app socket', async () => {
+    const { server, sock, got } = await listen({ ok: true });
+    try {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tac-open-'));
+      const res = await run(['page.html'], { TEAMAICODER_NODE: process.execPath, TEAMAICODER_SOCKET: sock, TEAMAICODER_PTY_ID: '5' }, tmp);
+      expect(res.code).toBe(0);
+      const expected = require('url').pathToFileURL(path.join(fs.realpathSync(tmp), 'page.html')).href;
+      expect(got).toEqual([{ url: expected, ptyId: '5' }]);
+    } finally {
+      server.close();
+    }
+  });
+
+  test('rejects unsupported schemes without contacting the app', async () => {
+    const { server, sock, got } = await listen({ ok: true });
+    try {
+      const res = await run(['javascript:alert(1)'], { TEAMAICODER_NODE: process.execPath, TEAMAICODER_SOCKET: sock });
+      expect(res.code).toBe(2);
+      expect(res.stderr).toMatch(/not an http\(s\) URL or file/);
+      expect(got).toEqual([]);
+    } finally {
+      server.close();
+    }
+  });
+});
+
+// ── Section home (status board) ───────────────────────────────────────────────
+
+describe('normalizePageUrl', () => {
+  test('turns paths and ~ into file URLs and keeps http(s)/file URLs', () => {
+    expect(normalizePageUrl('/srv/board/index.html', '/home/u')).toBe('file:///srv/board/index.html');
+    expect(normalizePageUrl('~/board/index.html', '/home/u')).toBe('file:///home/u/board/index.html');
+    expect(normalizePageUrl('file://~/board/index.html', '/home/u')).toBe('file:///home/u/board/index.html');
+    expect(normalizePageUrl('file:///a/b.html', '/home/u')).toBe('file:///a/b.html');
+    expect(normalizePageUrl('https://board.example.com/', '/home/u')).toBe('https://board.example.com/');
+  });
+
+  test('rejects relative paths, other schemes and empty input', () => {
+    for (const v of ['board.html', 'javascript:alert(1)', 'ftp://x.test/', '', '  ', null, 3]) {
+      expect(normalizePageUrl(v, '/home/u')).toBeNull();
+    }
+  });
+});
+
+describe('normalizeSectionHome', () => {
+  test('keeps known sections with a page or a project command', () => {
+    const out = normalizeSectionHome({
+      plan: { refresh: '  ./render all ', page: '~/b/index.html', projectRefresh: 'cd {root} && ./render' },
+      test: { projectRefresh: 'make status' },
+      build: { page: '/x.html' },
+      nowhere: { page: '/x.html' },
+      deploy: { refresh: 'only a command' },
+      ideas: 'nonsense',
+    }, '/home/u');
+    expect(out).toEqual({
+      plan: { refresh: './render all', page: 'file:///home/u/b/index.html', projectRefresh: 'cd {root} && ./render' },
+      test: { refresh: null, page: null, projectRefresh: 'make status' },
+    });
+  });
+
+  test('malformed input → no boards', () => {
+    expect(normalizeSectionHome(null)).toEqual({});
+    expect(normalizeSectionHome('x')).toEqual({});
+  });
+});
+
+describe('parseRenderedPage', () => {
+  test('takes the page from a "wrote" line, ignoring trailing notes', () => {
+    expect(parseRenderedPage('wrote /srv/board/projects/alpha.html (Alpha, portfolio, 0 TODO file(s))', '/h'))
+      .toBe('file:///srv/board/projects/alpha.html');
+  });
+
+  test('prefers the last "wrote" line over other mentions', () => {
+    const out = 'reading /srv/old.html\nwrote /srv/a.html\nwrote /srv/b.html\ndone, see /srv/other.html';
+    expect(parseRenderedPage(out, '/h')).toBe('file:///srv/b.html');
+  });
+
+  test('falls back to the last page-looking token on any line', () => {
+    expect(parseRenderedPage('Rendered.\nOpen ~/out/status.html.\n', '/h')).toBe('file:///h/out/status.html');
+    expect(parseRenderedPage('served at http://localhost:8080/board\n', '/h')).toBe('http://localhost:8080/board');
+    expect(parseRenderedPage('see "file:///srv/x.htm"', '/h')).toBe('file:///srv/x.htm');
+  });
+
+  test('null when nothing names a page', () => {
+    expect(parseRenderedPage('all good\n', '/h')).toBeNull();
+    expect(parseRenderedPage('wrote report.html', '/h')).toBeNull();
+    expect(parseRenderedPage('', '/h')).toBeNull();
+    expect(parseRenderedPage(undefined, '/h')).toBeNull();
+  });
+});
+
+describe('fillProjectCommand / shellQuote / outputTail', () => {
+  test('fills {root} shell-quoted, every occurrence', () => {
+    expect(fillProjectCommand('cd {root} && render {root}', '/w/my proj')).toBe("cd '/w/my proj' && render '/w/my proj'");
+    expect(shellQuote("it's")).toBe("'it'\\''s'");
+    expect(fillProjectCommand('make status', '/w')).toBe('make status');
+  });
+
+  test('a quoted root survives the shell', () => {
+    const { execFileSync } = require('child_process');
+    const root = "/tmp/a b/it's";
+    expect(execFileSync('/bin/sh', ['-c', fillProjectCommand('printf %s {root}', root)], { encoding: 'utf8' })).toBe(root);
+  });
+
+  test('keeps the last lines of error output', () => {
+    expect(outputTail('a\nb\n\nc\nd\ne\nf\ng\nh\n')).toBe('c\nd\ne\nf\ng\nh');
+    expect(outputTail('')).toBe('');
+    expect(outputTail('x'.repeat(2000)).length).toBe(800);
+  });
 });
