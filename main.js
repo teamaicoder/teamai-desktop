@@ -1,12 +1,13 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, Menu, MenuItem, clipboard, shell, WebContentsView } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, MenuItem, clipboard, shell, session, WebContentsView } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const {
   listDir, readFile, writeFile,
   renameEntry, deleteEntry, mkdirEntry, touchEntry,
   loadPrefs, savePrefs, normalizeWorkbenchUrl,
+  chromeUserAgent, windowOpenTarget,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('./main/handlers');
@@ -360,25 +361,70 @@ ipcMain.on('pty:kill',   (_, { id })               => {
 
 // ── Browser (WebContentsView) ─────────────────────────────────────────────────
 
+// Every preview tab shares one persistent session, so a sign-in (SharePoint,
+// Google Docs, …) is made once, works in every tab and survives restarts. It is
+// separate from the Workbench session.
+const PREVIEW_PARTITION = 'persist:preview';
+
 const browserViewMap = new Map(); // id → WebContentsView
 let browserSeq = 0;
+let previewSessionReady = false;
+
+function previewSession() {
+  const ses = session.fromPartition(PREVIEW_PARTITION);
+  if (!previewSessionReady) {
+    previewSessionReady = true;
+    ses.setUserAgent(chromeUserAgent(ses.getUserAgent()));
+  }
+  return ses;
+}
+
+function previewWebPreferences() {
+  return { nodeIntegration: false, contextIsolation: true, sandbox: true, session: previewSession() };
+}
+
+// Popups and new-tab links from preview pages. Sign-in popups become child
+// windows on the same session (window.opener intact, so they close back into
+// the page); links asking for a new tab open as another preview tab.
+function handlePreviewWindowOpen(contents, parentWin, onNewTab) {
+  contents.setWindowOpenHandler(details => {
+    if (windowOpenTarget(details) === 'tab') {
+      onNewTab(details.url);
+      return { action: 'deny' };
+    }
+    return {
+      action: 'allow',
+      overrideBrowserWindowOptions: {
+        parent: parentWin || undefined,
+        width: 520, height: 680,
+        show: !IS_TEST,
+        autoHideMenuBar: true,
+        webPreferences: previewWebPreferences(),
+      },
+    };
+  });
+  contents.on('did-create-window', child => {
+    handlePreviewWindowOpen(child.webContents, child, onNewTab);
+  });
+}
 
 ipcMain.handle('browser:create', event => {
   const id = String(++browserSeq);
-  const view = new WebContentsView({
-    webPreferences: { nodeIntegration: false, contextIsolation: true },
-  });
+  const view = new WebContentsView({ webPreferences: previewWebPreferences() });
   browserViewMap.set(id, view);
+  const wc = view.webContents;
 
   const fwd = (type, payload) => {
     try { event.sender.send('browser:event', { id, type, ...payload }); } catch {}
   };
-  view.webContents.on('did-navigate',        (_, url)              => fwd('navigate', { url }));
-  view.webContents.on('did-navigate-in-page',(_, url, isMainFrame) => { if (isMainFrame) fwd('navigate', { url }); });
-  view.webContents.on('page-title-updated',  (_, title)            => fwd('title', { title }));
-  view.webContents.on('did-fail-load',       (_, code, desc, url)  => {
+  const navState = () => ({ canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward() });
+  wc.on('did-navigate',         (_, url)              => fwd('navigate', { url, ...navState() }));
+  wc.on('did-navigate-in-page', (_, url, isMainFrame) => { if (isMainFrame) fwd('navigate', { url, ...navState() }); });
+  wc.on('page-title-updated',   (_, title)            => fwd('title', { title }));
+  wc.on('did-fail-load',        (_, code, desc, url)  => {
     if (code !== -3) console.warn(`[main] browser:fail id=${id} code=${code} ${desc} ${url}`);
   });
+  handlePreviewWindowOpen(wc, BrowserWindow.fromWebContents(event.sender), url => fwd('open-tab', { url }));
 
   console.log(`[main] browser:create → id=${id}`);
   return id;
@@ -389,6 +435,26 @@ ipcMain.handle('browser:navigate', async (_, { id, url }) => {
   if (!view) return;
   console.log(`[main] browser:navigate id=${id} url=${url}`);
   await view.webContents.loadURL(url);
+});
+
+ipcMain.handle('browser:back', (_, { id }) => {
+  const nav = browserViewMap.get(id)?.webContents.navigationHistory;
+  if (nav?.canGoBack()) nav.goBack();
+});
+
+ipcMain.handle('browser:forward', (_, { id }) => {
+  const nav = browserViewMap.get(id)?.webContents.navigationHistory;
+  if (nav?.canGoForward()) nav.goForward();
+});
+
+ipcMain.handle('browser:reload', (_, { id }) => {
+  browserViewMap.get(id)?.webContents.reload();
+});
+
+// Open the page the tab is showing in the system browser
+ipcMain.handle('browser:open-external', (_, { id }) => {
+  const url = browserViewMap.get(id)?.webContents.getURL();
+  if (url) openExternalIfWeb(url);
 });
 
 ipcMain.on('browser:show', (event, { id, bounds }) => {

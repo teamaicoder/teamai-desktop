@@ -494,8 +494,44 @@ html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMa
   outline: none;
 }
 .browser-url-input:focus { border-color: var(--color-primary); background: var(--color-surface); }
+.browser-toolbar { gap: 4px; }
+.browser-nav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--color-on-surface);
+  cursor: pointer;
+}
+.browser-nav-btn:hover:not(:disabled) { background: var(--color-hover); }
+.browser-nav-btn:disabled { opacity: 0.35; cursor: default; }
 /* Placeholder fills the remaining space; the native WebContentsView overlays it */
 .browser-placeholder { flex: 1; min-height: 0; }
+
+/* ── Chat + Preview split ────────────────────────────────────────────────── */
+.tab-pane.split-pane.active { flex-direction: row; }
+.split-chat {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 40%;
+  min-width: 0;
+  background: #1e1e1e;
+  overflow: hidden;
+}
+.split-divider {
+  width: 5px;
+  flex-shrink: 0;
+  background: var(--color-border);
+  cursor: col-resize;
+}
+.split-divider:hover, .split-divider.dragging { background: var(--color-primary); }
+.split-preview { flex: 1; min-width: 0; }
+.tab-chip.active.split-tab { border-bottom-color: var(--color-primary); }
 
 /* ── Tab content area ────────────────────────────────────────────────────── */
 #tab-content {

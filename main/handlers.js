@@ -46,11 +46,22 @@ function touchEntry(filePath) {
 
 // ── Preferences ───────────────────────────────────────────────────────────────
 
+// Chat + Preview split: the chat (left) pane's share of the width
+const SPLIT_RATIO_DEFAULT = 0.4;
+const SPLIT_RATIO_MIN = 0.15;
+const SPLIT_RATIO_MAX = 0.85;
+
+function normalizeSplitRatio(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return SPLIT_RATIO_DEFAULT;
+  return Math.min(SPLIT_RATIO_MAX, Math.max(SPLIT_RATIO_MIN, value));
+}
+
 const PREFS_DEFAULT = () => ({
   starredFolders: [],
   lastOpenFolder: null,
   sectionFolders: {},
   workbenchUrl: null,
+  splitRatio: SPLIT_RATIO_DEFAULT,
 });
 
 // The Workbench tab's URL: an http(s) URL, or null when unset or invalid
@@ -81,6 +92,7 @@ function loadPrefs(prefsPath) {
       lastOpenFolder: typeof data.lastOpenFolder === 'string' ? data.lastOpenFolder : null,
       sectionFolders,
       workbenchUrl: normalizeWorkbenchUrl(data.workbenchUrl),
+      splitRatio: normalizeSplitRatio(data.splitRatio),
     };
   } catch {
     return PREFS_DEFAULT();
@@ -90,6 +102,27 @@ function loadPrefs(prefsPath) {
 function savePrefs(prefsPath, data) {
   fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
   fs.writeFileSync(prefsPath, JSON.stringify(data, null, 2));
+}
+
+// ── Preview browser ───────────────────────────────────────────────────────────
+
+// Preview tabs present as plain Chrome. Some sign-in pages (Google in
+// particular) refuse browsers whose user agent names Electron or an unknown app.
+function chromeUserAgent(ua) {
+  return String(ua)
+    .split(' ')
+    .filter(token => token && !/^Electron\//.test(token) && !/^teamaicoder\//i.test(token))
+    .join(' ');
+}
+
+// How a window.open / target=_blank request from a preview page is handled.
+// Script popups with window features (the OAuth sign-in windows Microsoft and
+// Google open pass a size) become child windows that keep window.opener.
+// Plain links that ask for a new tab become another preview tab in the app.
+function windowOpenTarget({ disposition, features } = {}) {
+  if (disposition === 'new-window' || (typeof features === 'string' && features.trim())) return 'popup';
+  if (disposition === 'foreground-tab' || disposition === 'background-tab') return 'tab';
+  return 'popup';
 }
 
 // ── Git ───────────────────────────────────────────────────────────────────────
@@ -144,7 +177,8 @@ function ptyKill(ptys, id) {
 module.exports = {
   listDir, readFile, writeFile,
   renameEntry, deleteEntry, mkdirEntry, touchEntry,
-  loadPrefs, savePrefs, normalizeWorkbenchUrl,
+  loadPrefs, savePrefs, normalizeWorkbenchUrl, normalizeSplitRatio,
+  chromeUserAgent, windowOpenTarget,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 };

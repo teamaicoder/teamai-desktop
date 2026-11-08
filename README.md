@@ -10,7 +10,8 @@ TeamAICoder gives every project one window, organised by stage of the lifecycle:
 
 - **Lifecycle sections.** Seven top-level sections, each with its own folder, file tree and tab strip, so ideas, plans and deploy notes don't end up in one pile.
 - **Integrated terminals.** Real PTYs (node-pty + xterm.js), opened in any folder. Run `claude`, `codex`, `npm test` or anything else.
-- **Embedded browser tabs.** GitHub Projects, CI, analytics and docs sit next to the code, not in another app.
+- **Embedded browser tabs.** GitHub Projects, CI, analytics and docs sit next to the code, not in another app. Sign in once, as in a normal browser: the sign-in is shared by every browser tab and kept across restarts.
+- **Chat + Preview.** A terminal for your agent on the left and a live preview on the right, with a draggable divider. Ask the agent to edit a SharePoint or Google Docs file and watch the change land beside the chat.
 - **Markdown-first editing.** WYSIWYG and source modes, live reload when an agent edits the file, and links between markdown files that work.
 - **Code editor.** CodeMirror with syntax highlighting for common languages.
 - **Starred folders**, so you can jump between projects quickly.

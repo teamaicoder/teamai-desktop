@@ -6,7 +6,8 @@ const os = require('os');
 
 const {
   listDir, readFile, writeFile,
-  loadPrefs, savePrefs, normalizeWorkbenchUrl,
+  loadPrefs, savePrefs, normalizeWorkbenchUrl, normalizeSplitRatio,
+  chromeUserAgent, windowOpenTarget,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('../main/handlers');
@@ -221,6 +222,68 @@ describe('normalizeWorkbenchUrl', () => {
   });
 });
 
+// ── normalizeSplitRatio ───────────────────────────────────────────────────────
+
+describe('normalizeSplitRatio', () => {
+  test('keeps a ratio inside the allowed range', () => {
+    expect(normalizeSplitRatio(0.5)).toBe(0.5);
+    expect(normalizeSplitRatio(0.3)).toBe(0.3);
+  });
+
+  test('clamps ratios outside the range', () => {
+    expect(normalizeSplitRatio(0)).toBe(0.15);
+    expect(normalizeSplitRatio(-2)).toBe(0.15);
+    expect(normalizeSplitRatio(0.99)).toBe(0.85);
+  });
+
+  test('falls back to the default for missing or invalid values', () => {
+    for (const v of [undefined, null, '0.5', NaN, Infinity, {}]) {
+      expect(normalizeSplitRatio(v)).toBe(0.4);
+    }
+  });
+});
+
+// ── chromeUserAgent ───────────────────────────────────────────────────────────
+
+describe('chromeUserAgent', () => {
+  const ELECTRON_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) ' +
+    'teamaicoder/1.0.0 Chrome/136.0.7103.48 Electron/44.0.0 Safari/537.36';
+
+  test('removes the Electron and app tokens and keeps the Chrome ones', () => {
+    expect(chromeUserAgent(ELECTRON_UA)).toBe(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) ' +
+      'Chrome/136.0.7103.48 Safari/537.36');
+  });
+
+  test('leaves a plain Chrome user agent unchanged', () => {
+    const chrome = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36';
+    expect(chromeUserAgent(chrome)).toBe(chrome);
+  });
+
+  test('matches the app token case-insensitively', () => {
+    expect(chromeUserAgent('A TeamAICoder/2.1 B')).toBe('A B');
+  });
+});
+
+// ── windowOpenTarget ──────────────────────────────────────────────────────────
+
+describe('windowOpenTarget', () => {
+  test('script popups with window features open as child windows', () => {
+    expect(windowOpenTarget({ disposition: 'new-window', features: 'width=500,height=600' })).toBe('popup');
+    expect(windowOpenTarget({ disposition: 'foreground-tab', features: 'width=500' })).toBe('popup');
+  });
+
+  test('links that ask for a new tab open as a preview tab', () => {
+    expect(windowOpenTarget({ disposition: 'foreground-tab', features: '' })).toBe('tab');
+    expect(windowOpenTarget({ disposition: 'background-tab' })).toBe('tab');
+  });
+
+  test('anything else opens as a child window', () => {
+    expect(windowOpenTarget({ disposition: 'other' })).toBe('popup');
+    expect(windowOpenTarget()).toBe('popup');
+  });
+});
+
 // ── loadPrefs ─────────────────────────────────────────────────────────────────
 
 describe('loadPrefs', () => {
@@ -230,25 +293,25 @@ describe('loadPrefs', () => {
 
   test('returns defaults when file does not exist', () => {
     const p = path.join(tmp, 'prefs.json');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4 });
   });
 
   test('parses starredFolders and lastOpenFolder correctly', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, JSON.stringify({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a' }));
-    expect(loadPrefs(p)).toEqual({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a', sectionFolders: { ideas: {} }, workbenchUrl: null });
+    expect(loadPrefs(p)).toEqual({ starredFolders: ['/a', '/b'], lastOpenFolder: '/a', sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4 });
   });
 
   test('returns defaults for corrupt JSON', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, 'not valid json {{{{');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4 });
   });
 
   test('returns defaults for an empty file', () => {
     const p = path.join(tmp, 'prefs.json');
     fs.writeFileSync(p, '');
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: null, sectionFolders: {}, workbenchUrl: null, splitRatio: 0.4 });
   });
 
   test('keeps a valid workbenchUrl and drops an invalid one', () => {
@@ -257,6 +320,14 @@ describe('loadPrefs', () => {
     expect(loadPrefs(p).workbenchUrl).toBe('https://wb.example.com/');
     fs.writeFileSync(p, JSON.stringify({ workbenchUrl: 'file:///etc/passwd' }));
     expect(loadPrefs(p).workbenchUrl).toBeNull();
+  });
+
+  test('keeps a saved split ratio and clamps an out-of-range one', () => {
+    const p = path.join(tmp, 'prefs.json');
+    fs.writeFileSync(p, JSON.stringify({ splitRatio: 0.55 }));
+    expect(loadPrefs(p).splitRatio).toBe(0.55);
+    fs.writeFileSync(p, JSON.stringify({ splitRatio: 3 }));
+    expect(loadPrefs(p).splitRatio).toBe(0.85);
   });
 
   test('coerces missing starredFolders to []', () => {
@@ -296,14 +367,14 @@ describe('savePrefs', () => {
     const p = path.join(tmp, 'prefs.json');
     const data = { starredFolders: ['/a', '/b'], lastOpenFolder: '/b' };
     savePrefs(p, data);
-    expect(loadPrefs(p)).toEqual({ ...data, sectionFolders: { ideas: {} }, workbenchUrl: null });
+    expect(loadPrefs(p)).toEqual({ ...data, sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4 });
   });
 
   test('overwrites previous prefs on second save', () => {
     const p = path.join(tmp, 'prefs.json');
     savePrefs(p, { starredFolders: ['/old'], lastOpenFolder: '/old' });
     savePrefs(p, { starredFolders: [], lastOpenFolder: '/new' });
-    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: '/new', sectionFolders: { ideas: {} }, workbenchUrl: null });
+    expect(loadPrefs(p)).toEqual({ starredFolders: [], lastOpenFolder: '/new', sectionFolders: { ideas: {} }, workbenchUrl: null, splitRatio: 0.4 });
   });
 });
 

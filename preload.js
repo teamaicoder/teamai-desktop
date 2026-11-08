@@ -48,6 +48,10 @@ try {
     browserShow:     (id, bounds) => ipcRenderer.send('browser:show', { id, bounds }),
     browserHide:     (id)         => ipcRenderer.send('browser:hide', { id }),
     browserDestroy:  (id)         => ipcRenderer.invoke('browser:destroy', { id }),
+    browserBack:     (id)         => ipcRenderer.invoke('browser:back', { id }),
+    browserForward:  (id)         => ipcRenderer.invoke('browser:forward', { id }),
+    browserReload:   (id)         => ipcRenderer.invoke('browser:reload', { id }),
+    browserOpenExternal: (id)     => ipcRenderer.invoke('browser:open-external', { id }),
     onBrowserEvent:  cb           => ipcRenderer.on('browser:event', (_, p) => cb(p)),
 
     // Workbench (dashboard web tab)

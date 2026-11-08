@@ -48,9 +48,16 @@ The **+** at the end of a section's tab strip opens:
 
 - **New File**: creates a file in the current folder and opens it.
 - **New Terminal**: a shell in the section's folder. Start your agent here (`claude`, `codex`, `aider`, and so on).
-- **New Browser**: an embedded web page. Paste any URL: your GitHub Projects board, CI runs, analytics.
+- **New Browser**: an embedded web page. Paste any URL: your GitHub Projects board, CI runs, analytics. The toolbar has back, forward, reload and **Open in system browser**.
+- **New Chat + Preview**: a terminal on the left and a browser on the right. Run your agent (`claude`) in the terminal and open the page you're working on, such as a SharePoint or Google Docs link, on the right. Drag the divider to resize. The app remembers the split for next time.
 
 Clicking a file in the tree opens it in a tab. Markdown files open rendered. Switch to source or WYSIWYG mode to edit them. When a file changes on disk, for example because an agent edited it, its open tab reloads.
+
+### Signing in to sites in browser tabs
+
+Browser and Chat + Preview tabs behave like a normal browser profile. Sign in to Microsoft 365, Google or any other site the usual way (including multi-factor prompts) and the sign-in is shared by every browser tab and kept across restarts. Sign-in windows that a site opens as a popup appear as a small window and close back into the page. Links that open a new tab open another browser tab in the same section.
+
+The tabs present themselves as Chrome, because some sign-in pages refuse unfamiliar browsers. This session is separate from the Workbench tab's.
 
 ## 5. The Workbench tab
 
@@ -76,4 +83,4 @@ Preferences (section folders, starred folders, the last open folder) are saved t
 ~/Library/Application Support/TeamAICoder/teamaicoder-preferences.json
 ```
 
-Delete that file to reset the app. TeamAICoder stores no credentials. Terminals use your normal shell environment, so CLI agents use whatever login you've already set up for them.
+Delete that file to reset the app. Sign-ins made in browser tabs are kept in the app's browser profile in the same folder, as cookies, the same way a browser keeps them. TeamAICoder stores no other credentials. Terminals use your normal shell environment, so CLI agents use whatever login you've already set up for them.
