@@ -55,6 +55,14 @@ The API key comes from App Store Connect → Users and Access → Integrations �
 
 Signing is experimental: the repo doesn't ship hardened-runtime entitlements yet, and node-pty may need them. If a signed build opens but terminals fail, please [open an issue](https://github.com/teamaicoder/teamai-desktop/issues). Fully signed builds and published releases with auto-update are on the [roadmap](roadmap.md).
 
+## App icon
+
+The icon is drawn in `build/icon.svg`. electron-builder takes `build/icon.icns` for the app bundle, and `npm run dev` sets `build/icon.png` as the Dock icon. After editing the SVG, regenerate both (needs `rsvg-convert`, from `brew install librsvg`):
+
+```bash
+make icon
+```
+
 ## Clean up
 
 ```bash

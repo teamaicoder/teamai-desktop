@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#455a64"/>
+      <stop offset="1" stop-color="#1c262b"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.14"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- macOS icon grid: 824px rounded square centred on a 1024px canvas -->
+  <g filter="url(#shadow)">
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  </g>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+
+  <!-- Prompt chevron and cursor -->
+  <path d="M262 352 L438 512 L262 672" fill="none" stroke="#eceff1" stroke-width="76"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="486" y="634" width="200" height="76" rx="38" fill="#eceff1"/>
+
+  <!-- The team: three agents working alongside -->
+  <circle cx="720" cy="336" r="58" fill="#22c55e"/>
+  <circle cx="586" cy="420" r="46" fill="#3b82f6"/>
+  <circle cx="742" cy="494" r="40" fill="#f59e0b"/>
+</svg>
