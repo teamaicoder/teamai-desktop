@@ -54,6 +54,7 @@ To build the app and install it into `/Applications`, see [Building and installi
 | `npm run dist` | Package for macOS |
 | `make install` | Build and copy the app into `/Applications` |
 | `make default-markdown` | Make TeamAICoder the default app for Markdown files |
+| `make icon` | Rebuild the app icon from `build/icon.svg` |
 
 ## Architecture
 
