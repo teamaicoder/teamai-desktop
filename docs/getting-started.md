@@ -81,6 +81,31 @@ Browser and Chat + Preview tabs behave like a normal browser profile. Sign in to
 
 The tabs present themselves as Chrome, because some sign-in pages refuse unfamiliar browsers. This session is separate from the Workbench tab's.
 
+### Opening pages from a terminal
+
+Every terminal in the app has `BROWSER` set to a small helper, `teamai-open`, so a tool that opens a browser shows the page inside the app instead:
+
+- In a **Chat + Preview** tab, the page opens in that tab's own preview, on the right of the terminal.
+- In a **terminal tab**, it opens in a new browser tab right after the terminal.
+- In a section's bottom **Terminal** panel, it opens in a new browser tab in that section.
+
+This works for anything that honours `$BROWSER`, such as Python's `webbrowser` module, which many CLI tools and agent skills use to open a report or status page. You can also run it yourself:
+
+```bash
+"$BROWSER" report.html          # a file, relative to the current folder
+"$BROWSER" http://localhost:3000
+```
+
+Only `http`, `https` and `file` addresses are accepted. Outside the app the helper hands the page to your normal browser.
+
+### Reopening your last session
+
+When you quit and reopen the app, your tabs come back where they were, in Build and in every section, along with the section you were in:
+
+- **Files** reopen; any that have since been deleted are skipped.
+- **Terminals** start a fresh shell in the folder they were last in. Scrollback and running programs don't survive a restart, with one exception: a terminal that was running `claude` when you quit runs `claude --continue`, so the conversation picks up again. If two terminals in the same folder were running it, neither is resumed (they would both resume the same conversation). Set `"restoreClaude": false` in the preferences file to turn this off.
+- **Browser** and **Chat + Preview** tabs reload the page they were showing; you stay signed in.
+
 ## 5. The Workbench tab
 
 If you run the Workbench dashboard (the server side of TeamAICoder), point the app at it: **Workbench → Set Workbench URL…** in the menu bar. A **Workbench** tab appears at the end of the top bar and shows the dashboard.
@@ -99,7 +124,7 @@ For a project in `~/code/my-app`:
 
 ## Where settings are stored
 
-Preferences (section folders, starred folders, the last open folder, imported projects) are saved to:
+Preferences (section folders, starred folders, the last open folder, imported projects, the open tabs) are saved to:
 
 ```
 ~/Library/Application Support/TeamAICoder/teamaicoder-preferences.json

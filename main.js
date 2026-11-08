@@ -10,9 +10,14 @@ const {
   chromeUserAgent, windowOpenTarget,
   FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
   importProjects,
+  parseOpenRequest,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('./main/handlers');
+const { applyPtyInfo, isClaudeCommand, parseLsofCwd } = require('./renderer/session');
+const net = require('net');
+const os = require('os');
+const { execFile, execFileSync } = require('child_process');
 
 console.log('[main] starting, electron', process.versions.electron, 'node', process.versions.node);
 
@@ -126,8 +131,61 @@ function createWindow() {
   if (!IS_TEST && !app.isPackaged) win.webContents.openDevTools({ mode: 'detach' });
 }
 
+// ── Open-in-preview socket ────────────────────────────────────────────────────
+// teamai-open (BROWSER in every terminal) sends one JSON line { url, ptyId };
+// http(s) and file URLs go to the renderer, which opens them in the preview of
+// the tab that owns that terminal. The socket is only reachable by this user.
+let openSocketPath = null;
+
+function socketPathFor(dir) {
+  const p = path.join(dir, 'tac.sock');
+  // Unix socket paths are limited to ~104 bytes on macOS
+  return Buffer.byteLength(p) < 100 ? p : path.join(os.tmpdir(), `tac-${process.pid}.sock`);
+}
+
+function startOpenSocket() {
+  const sockPath = socketPathFor(app.getPath('userData'));
+  try { fs.unlinkSync(sockPath); } catch {}
+  const server = net.createServer(conn => {
+    let buf = '';
+    conn.setEncoding('utf8');
+    conn.setTimeout(5000, () => conn.destroy());
+    conn.on('data', chunk => {
+      buf += chunk;
+      if (buf.length > 16384) return conn.destroy();
+      const nl = buf.indexOf('\n');
+      if (nl < 0) return;
+      const req = parseOpenRequest(buf.slice(0, nl));
+      const win = BrowserWindow.getAllWindows()[0];
+      if (!req || !win || !rendererReady) {
+        conn.end(JSON.stringify({ ok: false }) + '\n');
+        return;
+      }
+      console.log(`[main] preview:open ${req.url} pty=${req.ptyId}`);
+      win.webContents.send('preview:open', req);
+      conn.end(JSON.stringify({ ok: true }) + '\n');
+    });
+    conn.on('error', () => {});
+  });
+  server.on('error', e => {
+    console.warn('[main] open socket error:', e.message);
+    openSocketPath = null;  // teamai-open then falls back to the system browser
+  });
+  // Set before listening so the first terminals already get the path
+  openSocketPath = sockPath;
+  server.listen(sockPath, () => {
+    try { fs.chmodSync(sockPath, 0o600); } catch {}
+    console.log('[main] open socket:', sockPath);
+  });
+  app.on('will-quit', () => {
+    try { server.close(); } catch {}
+    try { fs.unlinkSync(sockPath); } catch {}
+  });
+}
+
 app.whenReady().then(() => {
   console.log('[main] app ready, creating window');
+  startOpenSocket();
   // The packaged app takes its icon from the bundle; when run from source, set the Dock icon here
   if (process.platform === 'darwin' && !app.isPackaged) app.dock.setIcon(path.join(__dirname, 'build', 'icon.png'));
   addWorkbenchMenu();
@@ -247,6 +305,11 @@ ipcMain.handle('dialog:openFile', async (_, { defaultPath }) => {
 });
 
 // ── File management ───────────────────────────────────────────────────────────
+
+ipcMain.handle('fs:exists', (_, p) => {
+  try { const st = fs.statSync(p); return { exists: true, isDir: st.isDirectory() }; }
+  catch { return { exists: false, isDir: false }; }
+});
 
 ipcMain.handle('fs:rename', (_, { oldPath, newPath }) => {
   console.log(`[main] fs:rename "${oldPath}" → "${newPath}"`);
@@ -375,13 +438,31 @@ ipcMain.handle('fs:unwatch', (_, filePath) => {
 const ptys = new Map();
 let ptySeq = 0;
 
+// Every terminal can open pages in the app's preview: BROWSER points at the
+// teamai-open helper, which reaches the socket below (see CLAUDE.md).
+function teamaiOpenPath() {
+  const p = path.join(__dirname, 'scripts', 'teamai-open');
+  return app.isPackaged ? p.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`) : p;
+}
+
+function terminalEnv(ptyId) {
+  const env = {
+    BROWSER: teamaiOpenPath(),
+    TEAMAICODER_PTY_ID: String(ptyId),
+    TEAMAICODER_NODE: process.execPath,
+  };
+  if (openSocketPath) env.TEAMAICODER_SOCKET = openSocketPath;
+  return env;
+}
+
 ipcMain.handle('pty:spawn', (event, { cwd }) => {
   // Fall back to homedir if the requested cwd no longer exists (e.g. cleaned-up temp dirs)
-  const actualCwd = (cwd && fs.existsSync(cwd)) ? cwd : require('os').homedir();
+  const actualCwd = (cwd && fs.existsSync(cwd)) ? cwd : os.homedir();
   if (actualCwd !== cwd) console.warn(`[main] pty:spawn cwd="${cwd}" not found, using homedir`);
   console.log(`[main] pty:spawn cwd="${actualCwd}"`);
+  const seq = ++ptySeq;
   const id = ptySpawn(
-    nodePty, ptys, ++ptySeq, { cwd: actualCwd },
+    nodePty, ptys, seq, { cwd: actualCwd, env: terminalEnv(seq) },
     (id, data) => { try { event.sender.send('pty:data', { id, data }); } catch { } },
     (id)       => {
       console.log(`[main] pty:exit id=${id}`);
@@ -400,6 +481,70 @@ ipcMain.on('pty:resize', (_, { id, cols, rows })   => {
 ipcMain.on('pty:kill',   (_, { id })               => {
   console.log(`[main] pty:kill id=${id}`);
   ptyKill(ptys, id);
+});
+
+// A terminal's current folder and whether Claude Code is its foreground
+// process, read from the shell's pid (ps / lsof). Used to save the session.
+function runAsync(cmd, args) {
+  return new Promise(resolve => {
+    execFile(cmd, args, { encoding: 'utf8', timeout: 1500 }, (err, out) => resolve(err ? '' : out));
+  });
+}
+function runSync(cmd, args) {
+  try { return execFileSync(cmd, args, { encoding: 'utf8', timeout: 1500 }); } catch { return ''; }
+}
+function cwdOf(pid, out) {
+  if (process.platform === 'linux') {
+    try { return fs.readlinkSync(`/proc/${pid}/cwd`); } catch { return null; }
+  }
+  return parseLsofCwd(out);
+}
+async function ptyInfo(pty) {
+  const pid = pty.pid;
+  const tpgid = parseInt((await runAsync('ps', ['-o', 'tpgid=', '-p', String(pid)])).trim(), 10);
+  const fg = tpgid > 0 && tpgid !== pid ? await runAsync('ps', ['-o', 'args=', '-p', String(tpgid)]) : '';
+  const lsof = process.platform === 'linux' ? '' : await runAsync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']);
+  return { cwd: cwdOf(pid, lsof), claude: isClaudeCommand(fg) };
+}
+function ptyInfoSync(pty) {
+  const pid = pty.pid;
+  const tpgid = parseInt(runSync('ps', ['-o', 'tpgid=', '-p', String(pid)]).trim(), 10);
+  const fg = tpgid > 0 && tpgid !== pid ? runSync('ps', ['-o', 'args=', '-p', String(tpgid)]) : '';
+  const lsof = process.platform === 'linux' ? '' : runSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']);
+  return { cwd: cwdOf(pid, lsof), claude: isClaudeCommand(fg) };
+}
+
+ipcMain.handle('pty:info', async (_, ids) => {
+  const out = {};
+  await Promise.all((Array.isArray(ids) ? ids : []).map(async id => {
+    const pty = ptys.get(String(id));
+    if (pty) out[id] = await ptyInfo(pty);
+  }));
+  return out;
+});
+
+// On quit, refresh the saved session's terminals from the live shells, so a
+// `claude` still running at quit is resumed next launch.
+let sessionFinalised = false;
+app.on('before-quit', () => {
+  if (sessionFinalised) return;
+  sessionFinalised = true;
+  try {
+    if (!fs.existsSync(prefsPath)) return;
+    const data = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    if (!data.session) return;
+    const info = {};
+    for (const sec of Object.values(data.session.sections || {})) {
+      for (const e of sec.tabs || []) {
+        const pty = e.ptyId != null && ptys.get(String(e.ptyId));
+        if (pty) info[e.ptyId] = ptyInfoSync(pty);
+      }
+    }
+    applyPtyInfo(data.session, info);
+    savePrefs(prefsPath, data);
+  } catch (e) {
+    console.warn('[main] session refresh on quit failed:', e.message);
+  }
 });
 
 // ── Browser (WebContentsView) ─────────────────────────────────────────────────

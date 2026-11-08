@@ -26,6 +26,7 @@ try {
     deleteEntry:  (entryPath, isDir) => ipcRenderer.invoke('fs:delete', { entryPath, isDir }),
     mkdir:        dirPath        => ipcRenderer.invoke('fs:mkdir',  { dirPath }),
     touch:        filePath       => ipcRenderer.invoke('fs:touch',  { filePath }),
+    pathExists:   p              => ipcRenderer.invoke('fs:exists', p),
 
     // Context menu
     showContextMenu: (p, isDir, section) => ipcRenderer.send('ctx:show', { path: p, isDir, section }),
@@ -68,6 +69,9 @@ try {
     appReady:   ()  => ipcRenderer.invoke('app:ready'),
     onOpenFile: cb  => ipcRenderer.on('app:open-file', (_, p) => cb(p)),
 
+    // Pages opened from a terminal (teamai-open / $BROWSER): { url, ptyId }
+    onPreviewOpen: cb => ipcRenderer.on('preview:open', (_, p) => cb(p)),
+
     // Markdown → HTML (sync, runs in preload via marked)
     renderMarkdown: text => marked.parse(text, { breaks: true }),
 
@@ -76,6 +80,7 @@ try {
     ptyWrite:  (id, data)     => ipcRenderer.send('pty:write',  { id, data }),
     ptyResize: (id, cols, rows) => ipcRenderer.send('pty:resize', { id, cols, rows }),
     ptyKill:   id             => ipcRenderer.send('pty:kill',   { id }),
+    ptyInfo:   ids            => ipcRenderer.invoke('pty:info', ids),
 
     // Streaming PTY events
     onPtyData: cb => ipcRenderer.on('pty:data', (_, p) => cb(p)),

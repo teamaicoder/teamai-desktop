@@ -187,6 +187,17 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewS
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+// Unique suffix for tab ids (several tabs can be created in the same millisecond on restore)
+let tabSeq = 0;
+const uid = () => `${Date.now()}_${++tabSeq}`;
+
+// Add a tab to a tab list, right after afterId when given, otherwise at the end
+function insertTab(tabs, tab, afterId) {
+  const i = afterId ? tabs.findIndex(t => t.id === afterId) : -1;
+  if (i >= 0) tabs.splice(i + 1, 0, tab);
+  else tabs.push(tab);
+}
+
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
 function findTabPane(tabId) {
@@ -519,6 +530,7 @@ function buildFileRow(entry) {
 // ── Tab management ────────────────────────────────────────────────────────────
 function setActiveTab(id) {
   state.activeTabId = id;
+  scheduleSessionSave();
   renderTabBar();
 
   document.querySelectorAll('.tab-pane').forEach(pane => {
@@ -572,6 +584,7 @@ function closeTab(id) {
   if (pane) pane.remove();
 
   state.tabs.splice(idx, 1);
+  scheduleSessionSave();
 
   if (state.activeTabId === id) {
     const next = state.tabs[idx < state.tabs.length ? idx : state.tabs.length - 1];
@@ -1038,13 +1051,20 @@ function attachTerminal(container, ptyId) {
   terminals.set(ptyId, { term, fitAddon });
 
   // Defer open until the pane is visible — xterm requires the container to have
-  // real dimensions when open() is called, so we must wait until setActiveTab
-  // has set display:flex on the pane.
-  requestAnimationFrame(() => {
+  // real dimensions when open() is called. A tab created in the background
+  // (session restore) opens its terminal the first time its pane is shown.
+  const openIfVisible = () => {
+    if (!container.offsetWidth || !container.offsetHeight) return false;
     term.open(container);
     fitAddon.fit();
     window.api.ptyResize(ptyId, term.cols, term.rows);
     new ResizeObserver(() => fitAddon.fit()).observe(container);
+    return true;
+  };
+  requestAnimationFrame(() => {
+    if (openIfVisible()) return;
+    const ro = new ResizeObserver(() => { if (openIfVisible()) ro.disconnect(); });
+    ro.observe(container);
   });
 }
 
@@ -1056,10 +1076,10 @@ function openFileFromFinder(filePath) {
 }
 
 // ── Open file tab ─────────────────────────────────────────────────────────────
-async function openFileTab(entry) {
+async function openFileTab(entry, { activate = true } = {}) {
   console.log(`[app] openFileTab "${entry.path}"`);
   const existing = state.tabs.find(t => t.id === entry.path);
-  if (existing) { setActiveTab(existing.id); return; }
+  if (existing) { if (activate) setActiveTab(existing.id); return; }
 
   const ext = window.api.extname(entry.path);
   const fileType = fileTypeFor(ext);
@@ -1077,7 +1097,8 @@ async function openFileTab(entry) {
 
   state.tabs.push(tab);
   syncTabContents();
-  setActiveTab(tab.id);
+  if (activate) setActiveTab(tab.id);
+  else renderTabBar();
   updatePanelVisibility();
 
   if (fileType === 'image') {
@@ -1118,36 +1139,41 @@ async function spawnPty(dir) {
   }
 }
 
-async function openTerminalTab(dir) {
+async function openTerminalTab(dir, { input, activate = true } = {}) {
   console.log(`[app] openTerminalTab "${dir}"`);
   const spawned = await spawnPty(dir);
-  if (!spawned) return;
+  if (!spawned) return null;
   const { ptyId, cwd } = spawned;
+  if (input) window.api.ptyWrite(ptyId, input);
 
   const tab = {
-    id: `terminal_${cwd}_${Date.now()}`,
+    id: `terminal_${cwd}_${uid()}`,
     type: 'terminal',
     title: window.api.basename(cwd),
     ptyId,
+    cwd,
   };
 
   state.tabs.push(tab);
   syncTabContents();
-  setActiveTab(tab.id);
+  if (activate) setActiveTab(tab.id);
   updatePanelVisibility();
+  return tab;
 }
 
 // ── Open browser tab ──────────────────────────────────────────────────────────
-async function openBrowserTab(initialUrl) {
+async function openBrowserTab(initialUrl, { afterId, activate = true } = {}) {
   console.log('[app] openBrowserTab', initialUrl);
   const viewId = await window.api.browserCreate();
   console.log('[app] browserCreate → viewId=', viewId);
-  const tab = newBrowserTab(`browser_${Date.now()}`, viewId, initialUrl);
-  state.tabs.push(tab);
+  const tab = newBrowserTab(`browser_${uid()}`, viewId, initialUrl);
+  insertTab(state.tabs, tab, afterId);
   syncTabContents();
-  setActiveTab(tab.id);
+  if (activate) setActiveTab(tab.id);
+  else renderTabBar();
   updatePanelVisibility();
   if (initialUrl) window.api.browserNavigate(viewId, initialUrl).catch(() => {});
+  return tab;
 }
 
 function hostTitle(url) {
@@ -1166,28 +1192,33 @@ function setTabUrl(tab, url) {
 
 // ── Open Chat + Preview tab ───────────────────────────────────────────────────
 // A terminal (run `claude` in it) beside a preview browser, split by a divider.
-async function createSplitTab(idPrefix, dir) {
+// url: the preview's first page; input: typed into the terminal once it starts
+async function createSplitTab(idPrefix, dir, { url = '', input } = {}) {
   const spawned = await spawnPty(dir);
   if (!spawned) return null;
+  if (input) window.api.ptyWrite(spawned.ptyId, input);
   const viewId = await window.api.browserCreate();
   console.log(`[app] split tab: pty=${spawned.ptyId} view=${viewId} cwd="${spawned.cwd}"`);
+  if (url) window.api.browserNavigate(viewId, url).catch(() => {});
   return {
-    id: `${idPrefix}split_${Date.now()}`,
+    id: `${idPrefix}split_${uid()}`,
     type: 'split',
     title: 'Chat + Preview',
     ptyId: spawned.ptyId,
     viewId,
-    url: '',
+    url,
+    cwd: spawned.cwd,
   };
 }
 
-async function openSplitTab(dir) {
-  const tab = await createSplitTab('', dir);
-  if (!tab) return;
+async function openSplitTab(dir, { url, input, activate = true } = {}) {
+  const tab = await createSplitTab('', dir, { url, input });
+  if (!tab) return null;
   state.tabs.push(tab);
   syncTabContents();
-  setActiveTab(tab.id);
+  if (activate) setActiveTab(tab.id);
   updatePanelVisibility();
+  return tab;
 }
 
 // ── Browser pane ──────────────────────────────────────────────────────────────
@@ -1782,6 +1813,7 @@ class FileBrowserSection {
   // ── Tab system ────────────────────────────────────────────────────────────
   setActiveTab(id) {
     this.s.activeTabId = id;
+    scheduleSessionSave();
     this.renderTabBar();
     this.el('tab-content')?.querySelectorAll('.tab-pane').forEach(pane => {
       pane.classList.toggle('active', pane.dataset.tabId === id);
@@ -1828,6 +1860,7 @@ class FileBrowserSection {
       }
     }
     this.s.tabs.splice(idx, 1);
+    scheduleSessionSave();
     if (this.s.activeTabId === id) {
       const next = this.s.tabs[idx < this.s.tabs.length ? idx : this.s.tabs.length - 1];
       this.s.activeTabId = next?.id ?? null;
@@ -1938,29 +1971,33 @@ class FileBrowserSection {
     }
   }
 
-  async openBrowserTab(initialUrl) {
+  async openBrowserTab(initialUrl, { afterId, activate = true } = {}) {
     const viewId = await window.api.browserCreate();
-    const tab = newBrowserTab(`${this.prefix}browser_${Date.now()}`, viewId, initialUrl);
-    this.s.tabs.push(tab);
+    const tab = newBrowserTab(`${this.prefix}browser_${uid()}`, viewId, initialUrl);
+    insertTab(this.s.tabs, tab, afterId);
     this.syncTabContents();
-    this.setActiveTab(tab.id);
+    if (activate) this.setActiveTab(tab.id);
+    else this.renderTabBar();
     this.updatePanelVisibility();
     if (initialUrl) window.api.browserNavigate(viewId, initialUrl).catch(() => {});
+    return tab;
   }
 
-  async openSplitTab() {
-    const tab = await createSplitTab(this.prefix, this.s.currentDir);
-    if (!tab) return;
+  async openSplitTab(dir, { url, input, activate = true } = {}) {
+    const tab = await createSplitTab(this.prefix, dir || this.s.currentDir, { url, input });
+    if (!tab) return null;
     this.s.tabs.push(tab);
     this.syncTabContents();
-    this.setActiveTab(tab.id);
+    if (activate) this.setActiveTab(tab.id);
+    else this.renderTabBar();
     this.updatePanelVisibility();
+    return tab;
   }
 
-  async openFileTab(entry) {
+  async openFileTab(entry, { activate = true } = {}) {
     const tabId = `${this.prefix}${entry.path}`;
     const existing = this.s.tabs.find(t => t.id === tabId);
-    if (existing) { this.setActiveTab(tabId); return; }
+    if (existing) { if (activate) this.setActiveTab(tabId); return; }
 
     const ext = window.api.extname(entry.path);
     const fileType = fileTypeFor(ext);
@@ -1973,7 +2010,8 @@ class FileBrowserSection {
 
     this.s.tabs.push(tab);
     this.syncTabContents();
-    this.setActiveTab(tabId);
+    if (activate) this.setActiveTab(tabId);
+    else this.renderTabBar();
     this.updatePanelVisibility();
 
     if (fileType === 'image') {
@@ -2127,6 +2165,25 @@ class FileBrowserSection {
     this.updatePanelVisibility();
     this.initSplitHandle();
     await this.initTerminal();
+    await this.restoreSession();
+  }
+
+  // Reopen this section's tabs from the saved session (once, on first visit)
+  async restoreSession() {
+    const saved = sessionState.saved?.sections[this.id];
+    if (saved && saved.tabs.length) {
+      const active = await restoreEntries(this.id, saved, {
+        file: async p => {
+          await this.openFileTab({ path: p, name: window.api.basename(p) }, { activate: false });
+          return this.s.tabs.find(t => t.id === `${this.prefix}${p}`);
+        },
+        browser: url => this.openBrowserTab(url, { activate: false }),
+        split: (cwd, url, input) => this.openSplitTab(cwd, { url, input, activate: false }),
+      });
+      if (active) this.setActiveTab(active.id);
+    }
+    this.sessionRestored = true;
+    scheduleSessionSave();
   }
 
   onVisible() {
@@ -2162,6 +2219,148 @@ function findViewOwner(viewId) {
     if (tab) return { tab, renderTabBar: () => sec.renderTabBar(), openBrowserTab: url => sec.openBrowserTab(url) };
   }
   return null;
+}
+
+// ── Session: reopen the last tabs on launch ──────────────────────────────────
+// Build's tabs are restored during init; each section's on its first visit
+// (sections initialise lazily). Until a section is restored its saved tabs are
+// carried over unchanged, so visiting only Build doesn't lose them.
+const sessionState = { saved: null, claudeKeys: new Set(), restoring: true, timer: null, lastJson: null };
+
+function activeSectionId() {
+  return document.querySelector('.nav-tab.active')?.dataset.section || 'build';
+}
+
+function snapshotSession() {
+  const saved = sessionState.saved || TacSession.normalizeSession(null);
+  const sections = { build: TacSession.serializeTabs(state.tabs, state.activeTabId) };
+  for (const [id, sec] of Object.entries(SECTIONS)) {
+    sections[id] = sec.sessionRestored
+      ? TacSession.serializeTabs(sec.s.tabs, sec.s.activeTabId)
+      : saved.sections[id];
+  }
+  return { version: TacSession.VERSION, activeSection: activeSectionId(), sections };
+}
+
+async function saveSessionNow() {
+  if (sessionState.restoring) return;
+  const snap = snapshotSession();
+  const ptyIds = [];
+  for (const sec of Object.values(snap.sections)) {
+    for (const e of sec.tabs) if (e.ptyId != null) ptyIds.push(e.ptyId);
+  }
+  if (ptyIds.length) TacSession.applyPtyInfo(snap, await window.api.ptyInfo(ptyIds));
+  const json = JSON.stringify(snap);
+  if (json === sessionState.lastJson) return;
+  sessionState.lastJson = json;
+  state.prefs.session = snap;
+  await savePrefs();
+}
+
+function scheduleSessionSave() {
+  if (sessionState.restoring) return;
+  clearTimeout(sessionState.timer);
+  sessionState.timer = setTimeout(() => {
+    saveSessionNow().catch(err => console.warn('[app] session save failed:', err));
+  }, 400);
+}
+
+// Recreate saved tabs with the given openers, in order and in the background.
+// Missing files and folders are skipped. Returns the tab to make active.
+async function restoreEntries(sectionId, saved, openers) {
+  const created = [];
+  for (const [i, e] of saved.tabs.entries()) {
+    let tab = null;
+    try {
+      const resume = state.prefs.restoreClaude !== false && sessionState.claudeKeys.has(`${sectionId}:${i}`);
+      const input = resume ? 'claude --continue\r' : undefined;
+      if (e.type === 'file') {
+        if ((await window.api.pathExists(e.path)).exists) tab = await openers.file(e.path);
+      } else if (e.type === 'terminal' && openers.terminal) {
+        if ((await window.api.pathExists(e.cwd)).isDir) tab = await openers.terminal(e.cwd, input);
+      } else if (e.type === 'browser') {
+        tab = await openers.browser(e.url);
+      } else if (e.type === 'split') {
+        if ((await window.api.pathExists(e.cwd)).isDir) tab = await openers.split(e.cwd, e.url, input);
+      }
+    } catch (err) {
+      console.warn(`[app] restore ${sectionId}:${i} failed:`, err);
+    }
+    created.push(tab || null);
+  }
+  return created[saved.active] || created.find(Boolean) || null;
+}
+
+async function restoreSession() {
+  const saved = TacSession.normalizeSession(state.prefs.session);
+  sessionState.saved = saved;
+  sessionState.claudeKeys = TacSession.claudeContinueKeys(saved);
+  const build = saved.sections.build;
+  if (build.tabs.length) {
+    const active = await restoreEntries('build', build, {
+      file: async p => {
+        await openFileTab({ path: p, name: window.api.basename(p) }, { activate: false });
+        return state.tabs.find(t => t.id === p);
+      },
+      terminal: (cwd, input) => openTerminalTab(cwd, { input, activate: false }),
+      browser: url => openBrowserTab(url, { activate: false }),
+      split: (cwd, url, input) => openSplitTab(cwd, { url, input, activate: false }),
+    });
+    if (active) setActiveTab(active.id);
+  }
+  sessionState.restoring = false;
+  if (saved.activeSection !== 'build') showSection(saved.activeSection);
+  scheduleSessionSave();
+  setInterval(() => saveSessionNow().catch(() => {}), 30000);
+}
+
+// Switch the top-level section (no-op if it's already active or its tab is hidden)
+function showSection(id) {
+  const navTab = document.querySelector(`.nav-tab[data-section="${id}"]`);
+  if (!navTab || navTab.hidden || navTab.classList.contains('active')) return;
+  navTab.click();
+}
+
+// ── Pages opened from terminals ───────────────────────────────────────────────
+// teamai-open ($BROWSER in every terminal) → main → here, with the terminal's
+// ptyId. A Chat + Preview tab shows the page in its own preview; a terminal tab
+// or a section's bottom terminal gets a new browser tab beside it.
+function navigateSplitPreview(tab, url, renderBar) {
+  setTabUrl(tab, url);
+  updateBrowserToolbar(tab.viewId, { url });
+  renderBar();
+  window.api.browserNavigate(tab.viewId, url).catch(() => {});
+}
+
+async function openFromTerminal({ url, ptyId }) {
+  const owns = t => ptyId != null && String(t.ptyId) === String(ptyId);
+  const buildTab = state.tabs.find(owns);
+  if (buildTab) {
+    showSection('build');
+    if (buildTab.type === 'split') {
+      navigateSplitPreview(buildTab, url, renderTabBar);
+      setActiveTab(buildTab.id);
+    } else {
+      await openBrowserTab(url, { afterId: buildTab.id });
+    }
+    return;
+  }
+  for (const [id, sec] of Object.entries(SECTIONS)) {
+    const tab = sec.s.tabs.find(owns);
+    if (tab) {
+      showSection(id);
+      navigateSplitPreview(tab, url, () => sec.renderTabBar());
+      sec.setActiveTab(tab.id);
+      return;
+    }
+    if (ptyId != null && String(sec.terminalPtyId) === String(ptyId)) {
+      showSection(id);
+      await sec.openBrowserTab(url, { afterId: sec.s.activeTabId });
+      return;
+    }
+  }
+  showSection('build');
+  await openBrowserTab(url);
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -2218,6 +2417,7 @@ async function init() {
       setTabUrl(tab, url);
       updateBrowserToolbar(viewId, event);
       owner.renderTabBar();
+      scheduleSessionSave();
     } else if (type === 'title' && title && !tab.url && tab.type === 'browser') {
       tab.title = title;
       owner.renderTabBar();
@@ -2259,6 +2459,8 @@ async function init() {
   updatePanelVisibility();
   initWorkbench();
   initProjects();
+  window.api.onPreviewOpen(req => openFromTerminal(req).catch(err => console.error('[app] preview:open failed:', err)));
+  await restoreSession();
   window.api.onOpenFile(({ filePath }) => openFileFromFinder(filePath));
   for (const filePath of await window.api.appReady()) openFileFromFinder(filePath);
   console.log('[app] init() complete');
@@ -2566,6 +2768,7 @@ function initTopNav() {
     tab.addEventListener('click', () => {
       const section = tab.dataset.section;
       tabs.forEach(t => t.classList.toggle('active', t === tab));
+      scheduleSessionSave();
       document.querySelectorAll('.section-pane').forEach(pane => {
         pane.classList.toggle('active', pane.id === `section-${section}`);
       });

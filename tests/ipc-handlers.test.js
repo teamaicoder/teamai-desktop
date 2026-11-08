@@ -11,9 +11,15 @@ const {
   SIGN_IN_FIREFOX_UA, FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
   parseFrontmatter, normalizeRepo, readPortfolio, originUrl, scanWorkspace,
   projectRoot, resolveProjects, mergeProjects, importProjects,
+  previewOpenUrl, parseOpenRequest,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('../main/handlers');
+const {
+  restorableUrl, serializeTab, serializeTabs, normalizeSession,
+  claudeContinueKeys, applyPtyInfo, isClaudeCommand, parseLsofCwd,
+} = require('../renderer/session');
+const { normalizeOpenTarget, sendToApp } = require('../scripts/teamai-open.js');
 
 // ── Dependency smoke tests (catches the class of bug that broke the preload) ─
 // These run in Node — same require() resolution the main/preload processes use.
@@ -320,7 +326,11 @@ describe('windowOpenTarget', () => {
 // ── loadPrefs ─────────────────────────────────────────────────────────────────
 
 // Project fields every loaded prefs object has
-const NO_PROJECTS = { projects: [], activeProject: null, portfolioDir: null, workspaceRoot: null };
+// (and the default saved session)
+const NO_PROJECTS = {
+  projects: [], activeProject: null, portfolioDir: null, workspaceRoot: null,
+  session: normalizeSession(null), restoreClaude: true,
+};
 
 describe('loadPrefs', () => {
   let tmp;
@@ -789,5 +799,233 @@ describe('loadPrefs projects', () => {
     expect(prefs.activeProject).toBe('alpha');
     expect(prefs.portfolioDir).toBe('/specs');
     expect(prefs.workspaceRoot).toBe('/ws');
+  });
+});
+
+// ── Session (renderer/session.js) ─────────────────────────────────────────────
+
+describe('session: serializeTab / serializeTabs', () => {
+  test('saves each tab type with what it needs to reopen', () => {
+    expect(serializeTab({ id: 'a', type: 'file', path: '/p/a.md', content: 'x' })).toEqual({ type: 'file', path: '/p/a.md' });
+    expect(serializeTab({ type: 'terminal', cwd: '/p', ptyId: '3' })).toEqual({ type: 'terminal', cwd: '/p', claude: false, ptyId: '3' });
+    expect(serializeTab({ type: 'browser', url: 'https://x.test/a', viewId: '1' })).toEqual({ type: 'browser', url: 'https://x.test/a' });
+    expect(serializeTab({ type: 'split', cwd: '/p', url: 'file:///p/i.html', ptyId: '4', viewId: '2' }))
+      .toEqual({ type: 'split', cwd: '/p', url: 'file:///p/i.html', claude: false, ptyId: '4' });
+  });
+
+  test('skips tabs that cannot be reopened and unsafe URLs', () => {
+    expect(serializeTab({ type: 'terminal' })).toBeNull();
+    expect(serializeTab({ type: 'file' })).toBeNull();
+    expect(serializeTab({ type: 'mystery' })).toBeNull();
+    expect(serializeTab(null)).toBeNull();
+    expect(serializeTab({ type: 'browser', url: 'javascript:alert(1)' })).toEqual({ type: 'browser', url: '' });
+  });
+
+  test('records the active tab as an index among saved tabs', () => {
+    const tabs = [
+      { id: 'x', type: 'mystery' },
+      { id: 'f', type: 'file', path: '/a' },
+      { id: 'b', type: 'browser', url: '' },
+    ];
+    expect(serializeTabs(tabs, 'b')).toEqual({ tabs: [{ type: 'file', path: '/a' }, { type: 'browser', url: '' }], active: 1 });
+    expect(serializeTabs(tabs, 'x').active).toBeNull();
+    expect(serializeTabs(undefined, null)).toEqual({ tabs: [], active: null });
+  });
+});
+
+describe('session: normalizeSession', () => {
+  test('an empty or malformed session has every section, empty, with Build active', () => {
+    for (const raw of [null, undefined, 'x', 42, { sections: 'nope' }]) {
+      const s = normalizeSession(raw);
+      expect(s.activeSection).toBe('build');
+      expect(Object.keys(s.sections).sort()).toEqual(['build', 'deploy', 'design', 'ideas', 'operate', 'plan', 'test']);
+      for (const sec of Object.values(s.sections)) expect(sec).toEqual({ tabs: [], active: null });
+    }
+  });
+
+  test('drops runtime ptyIds, bad entries and terminal tabs outside Build', () => {
+    const s = normalizeSession({
+      activeSection: 'plan',
+      sections: {
+        build: { tabs: [{ type: 'terminal', cwd: '/p', claude: true, ptyId: '9' }, { type: 'file' }, 7], active: 0 },
+        plan: { tabs: [{ type: 'terminal', cwd: '/p' }, { type: 'split', cwd: '/q', url: 'https://x.test/' }], active: 5 },
+      },
+    });
+    expect(s.activeSection).toBe('plan');
+    expect(s.sections.build).toEqual({ tabs: [{ type: 'terminal', cwd: '/p', claude: true }], active: 0 });
+    expect(s.sections.plan).toEqual({ tabs: [{ type: 'split', cwd: '/q', url: 'https://x.test/', claude: false }], active: 0 });
+  });
+
+  test('an unknown active section falls back to Build; Workbench is allowed', () => {
+    expect(normalizeSession({ activeSection: 'nowhere' }).activeSection).toBe('build');
+    expect(normalizeSession({ activeSection: 'workbench' }).activeSection).toBe('workbench');
+  });
+});
+
+describe('session: claudeContinueKeys', () => {
+  test('resumes claude only where one terminal in that folder was running it', () => {
+    const s = normalizeSession({
+      sections: {
+        build: { tabs: [
+          { type: 'terminal', cwd: '/a', claude: true },
+          { type: 'terminal', cwd: '/b', claude: true },
+          { type: 'terminal', cwd: '/c', claude: false },
+        ] },
+        ideas: { tabs: [{ type: 'split', cwd: '/b', claude: true }, { type: 'split', cwd: '/d', claude: true }] },
+      },
+    });
+    expect([...claudeContinueKeys(s)].sort()).toEqual(['build:0', 'ideas:1']);
+  });
+
+  test('empty session → no keys', () => {
+    expect(claudeContinueKeys(normalizeSession(null)).size).toBe(0);
+    expect(claudeContinueKeys(null).size).toBe(0);
+  });
+});
+
+describe('session: applyPtyInfo', () => {
+  test('refreshes cwd and claude from live terminals by ptyId', () => {
+    const s = { sections: { build: { tabs: [
+      { type: 'terminal', cwd: '/start', claude: false, ptyId: '1' },
+      { type: 'terminal', cwd: '/other', claude: true, ptyId: '2' },
+      { type: 'file', path: '/f' },
+    ] } } };
+    applyPtyInfo(s, { 1: { cwd: '/moved', claude: true }, 2: { cwd: null, claude: false } });
+    expect(s.sections.build.tabs[0]).toMatchObject({ cwd: '/moved', claude: true });
+    expect(s.sections.build.tabs[1]).toMatchObject({ cwd: '/other', claude: false });
+    expect(s.sections.build.tabs[2]).toEqual({ type: 'file', path: '/f' });
+  });
+});
+
+describe('session: isClaudeCommand / parseLsofCwd / restorableUrl', () => {
+  test('recognises native and npm Claude Code installs', () => {
+    expect(isClaudeCommand('claude')).toBe(true);
+    expect(isClaudeCommand('/home/u/.local/bin/claude --resume')).toBe(true);
+    expect(isClaudeCommand('node /usr/local/bin/claude')).toBe(true);
+    expect(isClaudeCommand('node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js')).toBe(true);
+    expect(isClaudeCommand('vim claude.md')).toBe(false);
+    expect(isClaudeCommand('python3 x.py claude')).toBe(false);
+    expect(isClaudeCommand('')).toBe(false);
+    expect(isClaudeCommand(null)).toBe(false);
+  });
+
+  test('reads the cwd from lsof -Fn output', () => {
+    expect(parseLsofCwd('p123\nfcwd\nn/some/dir\n')).toBe('/some/dir');
+    expect(parseLsofCwd('')).toBeNull();
+    expect(parseLsofCwd(undefined)).toBeNull();
+  });
+
+  test('keeps http(s) and file URLs only', () => {
+    expect(restorableUrl('https://x.test/')).toBe('https://x.test/');
+    expect(restorableUrl('file:///tmp/a.html')).toBe('file:///tmp/a.html');
+    expect(restorableUrl('data:text/html,hi')).toBe('');
+    expect(restorableUrl('')).toBe('');
+    expect(restorableUrl(null)).toBe('');
+  });
+});
+
+// ── Opening pages from terminals ──────────────────────────────────────────────
+
+describe('previewOpenUrl / parseOpenRequest', () => {
+  test('accepts http(s) and file URLs', () => {
+    expect(previewOpenUrl('https://x.test/a')).toBe('https://x.test/a');
+    expect(previewOpenUrl(' http://localhost:3000 ')).toBe('http://localhost:3000/');
+    expect(previewOpenUrl('file:///tmp/a.html')).toBe('file:///tmp/a.html');
+  });
+
+  test('rejects other schemes and junk', () => {
+    for (const u of ['javascript:alert(1)', 'data:text/html,x', 'ftp://x.test', 'not a url', '', null, 42]) {
+      expect(previewOpenUrl(u)).toBeNull();
+    }
+  });
+
+  test('parses one request line', () => {
+    expect(parseOpenRequest('{"url":"https://x.test/","ptyId":"3"}')).toEqual({ url: 'https://x.test/', ptyId: '3' });
+    expect(parseOpenRequest('{"url":"file:///a.html","ptyId":7}')).toEqual({ url: 'file:///a.html', ptyId: '7' });
+    expect(parseOpenRequest('{"url":"https://x.test/"}')).toEqual({ url: 'https://x.test/', ptyId: null });
+    expect(parseOpenRequest('{"url":"javascript:x"}')).toBeNull();
+    expect(parseOpenRequest('not json')).toBeNull();
+    expect(parseOpenRequest('null')).toBeNull();
+  });
+});
+
+describe('teamai-open: normalizeOpenTarget', () => {
+  test('passes URLs through and turns paths into file URLs', () => {
+    expect(normalizeOpenTarget('https://x.test/a?b=1')).toBe('https://x.test/a?b=1');
+    expect(normalizeOpenTarget('file:///tmp/a.html')).toBe('file:///tmp/a.html');
+    expect(normalizeOpenTarget('/tmp/report.html')).toBe('file:///tmp/report.html');
+    expect(normalizeOpenTarget('out/page.html', '/work/proj')).toBe('file:///work/proj/out/page.html');
+    expect(normalizeOpenTarget('my file.html', '/w')).toBe('file:///w/my%20file.html');
+  });
+
+  test('reports failure when the app socket is missing (so it can fall back)', async () => {
+    expect(await sendToApp(path.join(os.tmpdir(), `tac-missing-${process.pid}.sock`), { url: 'https://x.test/' })).toBe(false);
+    expect(await sendToApp(undefined, { url: 'https://x.test/' })).toBe(false);
+  });
+
+  test('rejects other schemes and empty input', () => {
+    expect(normalizeOpenTarget('javascript:alert(1)')).toBeNull();
+    expect(normalizeOpenTarget('mailto:a@b.test')).toBeNull();
+    expect(normalizeOpenTarget('')).toBeNull();
+    expect(normalizeOpenTarget(undefined)).toBeNull();
+  });
+});
+
+describe('ptySpawn env', () => {
+  test('adds extra env to the inherited environment', () => {
+    let opts;
+    const fakePty = { spawn: (shell, args, o) => { opts = o; return { onData() {}, onExit() {} }; } };
+    ptySpawn(fakePty, new Map(), 1, { cwd: os.tmpdir(), env: { BROWSER: '/x/teamai-open', TEAMAICODER_PTY_ID: '1' } }, () => {}, () => {});
+    expect(opts.env.BROWSER).toBe('/x/teamai-open');
+    expect(opts.env.TEAMAICODER_PTY_ID).toBe('1');
+    expect(opts.env.PATH).toBe(process.env.PATH);
+  });
+});
+
+describe('teamai-open: wrapper script', () => {
+  const net = require('net');
+  const { execFile } = require('child_process');
+  const script = path.join(__dirname, '..', 'scripts', 'teamai-open');
+
+  function listen(reply) {
+    const sock = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tac-sock-')), 's.sock');
+    const got = [];
+    const server = net.createServer(c => {
+      let buf = '';
+      c.on('data', d => {
+        buf += d;
+        if (buf.includes('\n')) { got.push(JSON.parse(buf.split('\n')[0])); c.end(JSON.stringify(reply) + '\n'); }
+      });
+    });
+    return new Promise(r => server.listen(sock, () => r({ server, sock, got })));
+  }
+
+  const run = (args, env, cwd) => new Promise(r => {
+    execFile(script, args, { env: { ...process.env, ...env }, cwd }, (err, stdout, stderr) => r({ code: err ? err.code : 0, stderr }));
+  });
+
+  test('sends the URL and terminal id to the app socket', async () => {
+    const { server, sock, got } = await listen({ ok: true });
+    try {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tac-open-'));
+      const res = await run(['page.html'], { TEAMAICODER_NODE: process.execPath, TEAMAICODER_SOCKET: sock, TEAMAICODER_PTY_ID: '5' }, tmp);
+      expect(res.code).toBe(0);
+      const expected = require('url').pathToFileURL(path.join(fs.realpathSync(tmp), 'page.html')).href;
+      expect(got).toEqual([{ url: expected, ptyId: '5' }]);
+    } finally {
+      server.close();
+    }
+  });
+
+  test('rejects unsupported schemes without contacting the app', async () => {
+    const { server, sock, got } = await listen({ ok: true });
+    try {
+      const res = await run(['javascript:alert(1)'], { TEAMAICODER_NODE: process.execPath, TEAMAICODER_SOCKET: sock });
+      expect(res.code).toBe(2);
+      expect(res.stderr).toMatch(/not an http\(s\) URL or file/);
+      expect(got).toEqual([]);
+    } finally {
+      server.close();
+    }
   });
 });

@@ -36,14 +36,26 @@ The app follows Electron's standard two-process model with strict context isolat
 - `main/handlers.js` — pure Node functions for fs, prefs, git (`exec git rev-parse`), and PTY lifecycle. Designed to be injectable for tests (no Electron imports; `nodePty` and `ptys` are passed in explicitly).
 
 **Preload** (`preload.js`)
-- Exposes `window.api` to the renderer via `contextBridge`. This is the only bridge between the sandboxed renderer and Node. All calls go through IPC channels prefixed by domain: `fs:*`, `prefs:*`, `git:*`, `pty:*`, `md:*`, `dialog:*`, `browser:*`, `workbench:*`, `projects:*`.
+- Exposes `window.api` to the renderer via `contextBridge`. This is the only bridge between the sandboxed renderer and Node. All calls go through IPC channels prefixed by domain: `fs:*`, `prefs:*`, `git:*`, `pty:*`, `md:*`, `dialog:*`, `browser:*`, `workbench:*`, `projects:*`, `preview:*` (`preview:open`, pages sent from terminals).
 - Markdown rendering (`marked`) runs in the main process and is called via `md:render` IPC — it never runs in the renderer.
 
 **Renderer** (`renderer/`)
 - Single-page app: `index.html` + `app.js` + `styles.css`. No framework, no bundler.
+- `session.js` — pure functions for the saved session (`prefs.session`): serialise tabs, normalise a saved session, decide which terminals resume `claude --continue`. Loaded as a plain `<script>` (`window.TacSession`) and `require()`d by `main/handlers.js`, `main.js` and the unit tests — keep it free of DOM and Node APIs.
 - `app.js` has three layers: **state** (plain object at top), **sidebar** (file tree, starred folders, git badges), and **tab system** (IndexedStack-style — all panes stay in the DOM, only the active one is visible via `.active` class).
 - Tabs are keyed by file path for file tabs, and `terminal_${dir}_${timestamp}` for terminal tabs.
 - PTY data flows: main process → `pty:data` IPC event → `terminals Map<ptyId, {term, fitAddon}>` → xterm.js write.
+
+**Session restore**
+- The renderer saves `prefs.session` (debounced on tab changes, and every 30 s) with each section's tabs and active tab. Terminal entries carry the live `ptyId`; the renderer asks `pty:info` for each terminal's cwd and foreground process (ps/lsof) and records `claude: true` when Claude Code is in the foreground. On `before-quit`, main refreshes the saved entries from the live shells synchronously, so a `claude` still running at quit is resumed.
+- Build's tabs are restored in `init()`; each section's tabs on its first visit (sections initialise lazily). Until then a section's saved tabs are carried over unchanged.
+- Tab ids get a `uid()` suffix because restore creates several tabs in the same millisecond.
+
+**Opening pages from terminals: the socket/env contract**
+- Main listens on a Unix socket (`tac.sock` in userData, mode 0600; a temp path if that would exceed the socket path limit). A client sends one JSON line `{"url": "...", "ptyId": "..."}` and gets back `{"ok": true}` or `{"ok": false}`. Only `http:`, `https:` and `file:` URLs are accepted (`parseOpenRequest` in `main/handlers.js`).
+- Every PTY gets: `BROWSER` (path to `scripts/teamai-open`), `TEAMAICODER_SOCKET`, `TEAMAICODER_PTY_ID` (the PTY's id) and `TEAMAICODER_NODE` (`process.execPath`). `scripts/teamai-open` runs `scripts/teamai-open.js` under `ELECTRON_RUN_AS_NODE=1`; if the socket can't be reached it falls back to the system opener. Both scripts are `asarUnpack`ed in packaged builds and `main.js` resolves the unpacked path.
+- The renderer (`openFromTerminal`) routes by `ptyId`: a split tab's own preview, else a new browser tab after the owning terminal tab, else a new tab in the section owning the bottom terminal, else Build.
+- This socket is the intended base for a future MCP `preview_open` tool: an MCP server started from an app terminal inherits these variables and can send the same message.
 
 **Vendor assets** (`renderer/vendor/`)
 - Copied by `npm run setup` from `node_modules`. Never edit these files directly.
@@ -77,4 +89,5 @@ The app follows Electron's standard two-process model with strict context isolat
   - `workbench.test.js` — Workbench tab: set/clear the URL from the menu, persistent session across restarts, external links open in the system browser, unreachable-URL error
   - `open-file.test.js` — files opened from Finder (macOS `open-file`): open rendered in Build, switch section, reuse the tab
   - `preview.test.js` — browser tabs and the Chat + Preview split: sign-in cookie persists across restarts, Chrome user agent, sign-in popups on the same session, new-tab links, back/forward, divider drag and saved ratio, section switching
+  - `session.test.js` — session restore (tabs in Build and a section, active section and tab, terminal cwd, missing files skipped, `claude --continue` resume via a stand-in `claude`) and pages opened from terminals (Python `webbrowser` in a split lands in its preview, `$BROWSER` in a terminal tab opens a tab after it, a section's bottom terminal)
   - `projects.test.js` — projects: import a fixture portfolio, the switcher with phase/health chips, choosing a project (Build repo list, missing repos greyed, sections at the project folder), Re-import from the menu, active project kept across restarts

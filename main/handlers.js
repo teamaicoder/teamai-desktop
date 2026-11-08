@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { normalizeSession } = require('../renderer/session');
 const { exec } = require('child_process');
 
 // ── File system ───────────────────────────────────────────────────────────────
@@ -66,6 +67,8 @@ const PREFS_DEFAULT = () => ({
   activeProject: null,
   portfolioDir: null,
   workspaceRoot: null,
+  session: normalizeSession(null),
+  restoreClaude: true,
 });
 
 // The Workbench tab's URL: an http(s) URL, or null when unset or invalid
@@ -101,6 +104,8 @@ function loadPrefs(prefsPath) {
       activeProject: typeof data.activeProject === 'string' ? data.activeProject : null,
       portfolioDir: typeof data.portfolioDir === 'string' ? data.portfolioDir : null,
       workspaceRoot: typeof data.workspaceRoot === 'string' ? data.workspaceRoot : null,
+      session: normalizeSession(data.session),
+      restoreClaude: data.restoreClaude !== false,
     };
   } catch {
     return PREFS_DEFAULT();
@@ -352,6 +357,31 @@ function importProjects({ portfolioDir, workspaceRoot, existing }) {
   return mergeProjects(existing, resolved);
 }
 
+// ── Opening pages in the preview ─────────────────────────────────────────────
+
+// A URL a terminal may open in the preview: http(s) or file. Returns the
+// normalised URL or null.
+function previewOpenUrl(url) {
+  if (typeof url !== 'string' || !url.trim()) return null;
+  try {
+    const u = new URL(url.trim());
+    return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'file:' ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+// One request line from teamai-open → { url, ptyId } or null
+function parseOpenRequest(line) {
+  let msg;
+  try { msg = JSON.parse(String(line)); } catch { return null; }
+  if (!msg || typeof msg !== 'object') return null;
+  const url = previewOpenUrl(msg.url);
+  if (!url) return null;
+  const ptyId = msg.ptyId == null || msg.ptyId === '' ? null : String(msg.ptyId);
+  return { url, ptyId };
+}
+
 // ── Git ───────────────────────────────────────────────────────────────────────
 
 function gitBranch(dirPath) {
@@ -367,7 +397,7 @@ function gitBranch(dirPath) {
 // ptySpawn / ptyWrite / ptyResize / ptyKill accept the ptys Map and nodePty
 // explicitly so tests can inject mocks and inspect state without electron.
 
-function ptySpawn(nodePty, ptys, seq, { cwd, cols = 80, rows = 24 }, onData, onExit) {
+function ptySpawn(nodePty, ptys, seq, { cwd, cols = 80, rows = 24, env = {} }, onData, onExit) {
   if (!nodePty) throw new Error('node-pty is not installed. Run: npm run setup');
 
   const id = String(seq);
@@ -378,7 +408,7 @@ function ptySpawn(nodePty, ptys, seq, { cwd, cols = 80, rows = 24 }, onData, onE
     cols,
     rows,
     cwd,
-    env: { ...process.env },
+    env: { ...process.env, ...env },
   });
 
   pty.onData(data => onData(id, data));
@@ -409,6 +439,7 @@ module.exports = {
   SIGN_IN_FIREFOX_UA, FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
   parseFrontmatter, normalizeRepo, readPortfolio, originUrl, scanWorkspace,
   projectRoot, resolveProjects, mergeProjects, importProjects,
+  previewOpenUrl, parseOpenRequest,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 };

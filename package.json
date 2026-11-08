@@ -39,6 +39,10 @@
         ]
       }
     },
+    "asarUnpack": [
+      "scripts/teamai-open",
+      "scripts/teamai-open.js"
+    ],
     "files": [
       "main.js",
       "preload.js",

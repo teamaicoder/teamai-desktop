@@ -1,0 +1,11 @@
+#!/bin/sh
+# Open a URL or file in TeamAICoder's preview (see teamai-open.js).
+# Terminals in the app set BROWSER to this script and TEAMAICODER_NODE to the
+# app's executable, which runs the helper as plain Node. Outside the app it
+# hands the target to the system opener.
+dir=$(cd "$(dirname "$0")" && pwd)
+if [ -n "$TEAMAICODER_NODE" ] && [ -x "$TEAMAICODER_NODE" ]; then
+  ELECTRON_RUN_AS_NODE=1 exec "$TEAMAICODER_NODE" "$dir/teamai-open.js" "$@"
+fi
+if command -v open >/dev/null 2>&1; then exec open "$@"; fi
+exec xdg-open "$@"
