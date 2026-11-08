@@ -8,6 +8,7 @@ const {
   renameEntry, deleteEntry, mkdirEntry, touchEntry,
   loadPrefs, savePrefs, normalizeWorkbenchUrl,
   chromeUserAgent, windowOpenTarget,
+  FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('./main/handlers');
@@ -377,6 +378,10 @@ function previewSession() {
   if (!previewSessionReady) {
     previewSessionReady = true;
     ses.setUserAgent(chromeUserAgent(ses.getUserAgent()));
+    // Google sign-in blocks embedded Chromium; present as Firefox there
+    ses.webRequest.onBeforeSendHeaders({ urls: FIREFOX_SIGN_IN_URLS }, (details, callback) => {
+      callback({ requestHeaders: signInRequestHeaders(details.requestHeaders) });
+    });
     // Hide WebAuthn so sign-in pages skip passkeys Electron can't complete
     ses.registerPreloadScript({
       type: 'frame',

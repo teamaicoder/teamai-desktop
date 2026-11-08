@@ -115,6 +115,24 @@ function chromeUserAgent(ua) {
     .join(' ');
 }
 
+// Google's sign-in refuses embedded Chromium even with a Chrome user agent:
+// the Sec-CH-UA client hints and navigator.userAgentData still name the
+// embedder. Firefox sends neither, so on Google's sign-in pages the preview
+// presents as Firefox. The preview preload uses the same string.
+const SIGN_IN_FIREFOX_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:145.0) Gecko/20100101 Firefox/145.0';
+const FIREFOX_SIGN_IN_URLS = ['https://accounts.google.com/*'];
+
+// Request headers for a Google sign-in request: Firefox user agent, no client hints
+function signInRequestHeaders(headers = {}) {
+  const out = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (/^sec-ch-ua/i.test(name) || /^user-agent$/i.test(name)) continue;
+    out[name] = value;
+  }
+  out['User-Agent'] = SIGN_IN_FIREFOX_UA;
+  return out;
+}
+
 // How a window.open / target=_blank request from a preview page is handled.
 // Script popups with window features (the OAuth sign-in windows Microsoft and
 // Google open pass a size) become child windows that keep window.opener.
@@ -179,6 +197,7 @@ module.exports = {
   renameEntry, deleteEntry, mkdirEntry, touchEntry,
   loadPrefs, savePrefs, normalizeWorkbenchUrl, normalizeSplitRatio,
   chromeUserAgent, windowOpenTarget,
+  SIGN_IN_FIREFOX_UA, FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 };

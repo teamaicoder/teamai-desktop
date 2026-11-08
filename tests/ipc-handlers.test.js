@@ -8,6 +8,7 @@ const {
   listDir, readFile, writeFile,
   loadPrefs, savePrefs, normalizeWorkbenchUrl, normalizeSplitRatio,
   chromeUserAgent, windowOpenTarget,
+  SIGN_IN_FIREFOX_UA, FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('../main/handlers');
@@ -240,6 +241,36 @@ describe('normalizeSplitRatio', () => {
     for (const v of [undefined, null, '0.5', NaN, Infinity, {}]) {
       expect(normalizeSplitRatio(v)).toBe(0.4);
     }
+  });
+});
+
+// ── signInRequestHeaders ──────────────────────────────────────────────────────
+
+describe('signInRequestHeaders', () => {
+  test('swaps the user agent for Firefox and drops client hints', () => {
+    const out = signInRequestHeaders({
+      'User-Agent': 'Mozilla/5.0 Chrome/140.0.0.0 Safari/537.36',
+      'sec-ch-ua': '"Chromium";v="140"',
+      'Sec-CH-UA-Mobile': '?0',
+      'sec-ch-ua-platform': '"macOS"',
+      Accept: 'text/html',
+      Cookie: 'a=1',
+    });
+    expect(out).toEqual({ Accept: 'text/html', Cookie: 'a=1', 'User-Agent': SIGN_IN_FIREFOX_UA });
+  });
+
+  test('handles missing headers', () => {
+    expect(signInRequestHeaders()).toEqual({ 'User-Agent': SIGN_IN_FIREFOX_UA });
+  });
+
+  test('covers only Google sign-in', () => {
+    expect(FIREFOX_SIGN_IN_URLS).toEqual(['https://accounts.google.com/*']);
+  });
+
+  test('the preview preload uses the same Firefox user agent', () => {
+    const preload = fs.readFileSync(path.join(__dirname, '..', 'main', 'preview-preload.js'), 'utf8');
+    expect(preload).toContain(`'${SIGN_IN_FIREFOX_UA}'`);
+    expect(preload).toContain("'accounts.google.com'");
   });
 });
 
