@@ -346,19 +346,66 @@ function resolveProjects(projects, repoPaths, workspaceRoot) {
 
 // Re-import: the portfolio's projects, in its order, keeping a folder the user
 // set by hand (rootPinned) for projects that were already there.
+// Projects added from a folder (source 'folder') aren't in the portfolio, so
+// they are kept, after the portfolio's projects, unless a portfolio project now
+// has the same slug.
 function mergeProjects(existing, imported) {
-  const bySlug = new Map((Array.isArray(existing) ? existing : []).map(p => [p.slug, p]));
-  return imported.map(p => {
+  const prior = Array.isArray(existing) ? existing : [];
+  const bySlug = new Map(prior.map(p => [p.slug, p]));
+  const merged = imported.map(p => {
     const old = bySlug.get(p.slug);
     return old && old.rootPinned && old.root ? { ...p, root: old.root, rootPinned: true } : p;
   });
+  const slugs = new Set(merged.map(p => p.slug));
+  return merged.concat(prior.filter(p => p.source === 'folder' && !slugs.has(p.slug)));
 }
 
-// Import a portfolio: read it, scan the workspace, resolve and merge
+// Import a portfolio: read it, scan the workspace, resolve and merge. A folder
+// with no project files is refused rather than treated as an empty portfolio,
+// which would drop every project.
 function importProjects({ portfolioDir, workspaceRoot, existing }) {
   const imported = readPortfolio(portfolioDir);
+  if (!imported.length) {
+    throw new Error(`No project files found in ${portfolioDir}. A portfolio is a folder of <slug>.md files with a title or repos in their frontmatter, or a repo containing portfolio/. To add a single project, use Add Project Folder.`);
+  }
   const resolved = resolveProjects(imported, scanWorkspace(workspaceRoot), workspaceRoot);
   return mergeProjects(existing, resolved);
+}
+
+function readFrontmatterFile(file) {
+  try { return parseFrontmatter(fs.readFileSync(file, 'utf8')); } catch { return {}; }
+}
+
+// A project made from one folder: the folder is its root, its repos are the
+// folder's own checkout and any checkouts up to two levels below it. Title,
+// phase and health come from RELEASE.md / PRODUCT.md frontmatter when present.
+function projectFromFolder(dir) {
+  const release = readFrontmatterFile(path.join(dir, 'RELEASE.md'));
+  const product = readFrontmatterFile(path.join(dir, 'PRODUCT.md'));
+  const base = path.basename(dir);
+  const slug = base.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'project';
+  const found = {};
+  const own = fs.existsSync(path.join(dir, '.git')) ? normalizeRepo(originUrl(dir)) : null;
+  if (own) found[own] = dir;
+  for (const [repo, p] of Object.entries(scanWorkspace(dir, 2))) if (!found[repo]) found[repo] = p;
+  return {
+    slug,
+    title: scalar(release.project) || scalar(product.product) || scalar(release.title) || base,
+    oneLiner: scalar(release.release) || '',
+    phase: scalar(release.phase) || '',
+    health: scalar(release.health) || '',
+    oss: '',
+    repos: Object.entries(found).map(([repo, p]) => ({ repo, path: p })),
+    root: dir,
+    source: 'folder',
+  };
+}
+
+// Add (or replace, by slug) a folder project
+function addFolderProject(existing, dir) {
+  const project = projectFromFolder(dir);
+  const prior = (Array.isArray(existing) ? existing : []).filter(p => p.slug !== project.slug);
+  return { project, projects: prior.concat(project) };
 }
 
 // ── Section home (a status board pinned first in a section) ──────────────────
@@ -529,6 +576,7 @@ module.exports = {
   SIGN_IN_FIREFOX_UA, FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
   parseFrontmatter, normalizeRepo, readPortfolio, originUrl, scanWorkspace,
   projectRoot, resolveProjects, mergeProjects, importProjects,
+  projectFromFolder, addFolderProject,
   previewOpenUrl, parseOpenRequest,
   HOME_SECTIONS, normalizePageUrl, normalizeSectionHome, parseRenderedPage, shellQuote, fillProjectCommand, outputTail,
   gitBranch,

@@ -72,6 +72,36 @@ test.describe('Projects', () => {
     }
   });
 
+  test('importing a folder with no project files keeps the projects; a folder can be added as a project', async () => {
+    const { app, win } = await launchApp();
+    try {
+      await importFixture(win, fx);
+      const solo = path.join(fx.workspace, 'solo');
+      fs.mkdirSync(solo, { recursive: true });
+      fs.writeFileSync(path.join(solo, 'RELEASE.md'), '---\nproject: Solo Project\nphase: build\nhealth: amber\n---\n');
+      await win.evaluate(([p, w]) => window._testImportProjects(p, w), [solo, fx.workspace]);
+
+      await win.locator('#project-switcher').click();
+      await expect(win.locator('#project-menu .project-menu-item[data-slug]')).toHaveCount(2);
+      await win.keyboard.press('Escape');
+
+      await win.evaluate(dir => window._testAddProjectFolder(dir), solo);
+      await expect(win.locator('#project-switcher')).toContainText('Solo Project');
+      await win.locator('#project-switcher').click();
+      const items = win.locator('#project-menu .project-menu-item[data-slug]');
+      await expect(items).toHaveCount(3);
+      await expect(items.nth(2)).toContainText('Solo Project');
+      await win.keyboard.press('Escape');
+
+      // Re-import keeps the folder project
+      await win.evaluate(([p, w]) => window._testImportProjects(p, w), [fx.specs, fx.workspace]);
+      await win.locator('#project-switcher').click();
+      await expect(win.locator('#project-menu .project-menu-item[data-slug]')).toHaveCount(3);
+    } finally {
+      await app.close();
+    }
+  });
+
   test('choosing a project opens its folder and lists its repos', async () => {
     const { app, win } = await launchApp();
     try {

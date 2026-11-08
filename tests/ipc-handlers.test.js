@@ -11,6 +11,7 @@ const {
   SIGN_IN_FIREFOX_UA, FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
   parseFrontmatter, normalizeRepo, readPortfolio, originUrl, scanWorkspace,
   projectRoot, resolveProjects, mergeProjects, importProjects,
+  projectFromFolder, addFolderProject,
   previewOpenUrl, parseOpenRequest,
   normalizePageUrl, normalizeSectionHome, parseRenderedPage, shellQuote, fillProjectCommand, outputTail,
   gitBranch,
@@ -781,9 +782,64 @@ describe('resolveProjects / mergeProjects / importProjects', () => {
     expect(merged[0]).toMatchObject({ title: 'Alpha', root: '/pinned/alpha', rootPinned: true });
   });
 
+  test('a folder with no project files is refused, not treated as an empty portfolio', () => {
+    const repo = path.join(tmp, 'just-a-repo');
+    makeCheckout(repo, 'git@github.com:example-org/solo.git');
+    expect(() => importProjects({ portfolioDir: repo, workspaceRoot: ws, existing: [{ slug: 'alpha', title: 'A', repos: [] }] }))
+      .toThrow(/No project files found/);
+  });
+
+  test('re-import keeps folder projects that are not in the portfolio', () => {
+    const existing = [
+      { slug: 'solo', title: 'Solo', repos: [], root: '/x/solo', source: 'folder' },
+      { slug: 'beta', title: 'Beta folder', repos: [], root: '/x/beta', source: 'folder' },
+    ];
+    const merged = importProjects({ portfolioDir: portfolio, workspaceRoot: ws, existing });
+    expect(merged.map(p => p.slug)).toEqual(['alpha', 'beta', 'solo']);
+    expect(merged[1].title).toBe('Beta');   // the portfolio wins on a shared slug
+  });
+
   test('mergeProjects without existing projects returns the import', () => {
     const imported = resolveProjects([{ slug: 'z', title: 'Z', repos: [] }], {}, ws);
     expect(mergeProjects(undefined, imported)).toEqual(imported);
+  });
+});
+
+describe('projectFromFolder / addFolderProject', () => {
+  let tmp;
+  beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'folder-project-')); });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  test('takes title, phase and health from RELEASE.md and finds its checkouts', () => {
+    const dir = path.join(tmp, 'Solo App');
+    makeCheckout(dir, 'git@github.com:example-org/solo-app.git');
+    makeCheckout(path.join(dir, 'tools', 'cli'), 'https://github.com/example-org/solo-cli.git');
+    fs.writeFileSync(path.join(dir, 'RELEASE.md'), '---\nproject: Solo\nrelease: v1 beta\nphase: build\nhealth: amber\n---\n');
+    expect(projectFromFolder(dir)).toEqual({
+      slug: 'solo-app', title: 'Solo', oneLiner: 'v1 beta', phase: 'build', health: 'amber', oss: '',
+      repos: [
+        { repo: 'example-org/solo-app', path: dir },
+        { repo: 'example-org/solo-cli', path: path.join(dir, 'tools', 'cli') },
+      ],
+      root: dir, source: 'folder',
+    });
+  });
+
+  test('falls back to PRODUCT.md, then the folder name', () => {
+    const a = path.join(tmp, 'a'); fs.mkdirSync(a);
+    fs.writeFileSync(path.join(a, 'PRODUCT.md'), '---\nproduct: Product A\n---\n');
+    expect(projectFromFolder(a).title).toBe('Product A');
+    const b = path.join(tmp, 'plain'); fs.mkdirSync(b);
+    expect(projectFromFolder(b)).toMatchObject({ slug: 'plain', title: 'plain', repos: [], phase: '' });
+  });
+
+  test('addFolderProject appends, or replaces a project with the same slug', () => {
+    const dir = path.join(tmp, 'solo'); fs.mkdirSync(dir);
+    const existing = [{ slug: 'alpha', title: 'A', repos: [] }, { slug: 'solo', title: 'Old', repos: [] }];
+    const { project, projects } = addFolderProject(existing, dir);
+    expect(project.slug).toBe('solo');
+    expect(projects.map(p => p.slug)).toEqual(['alpha', 'solo']);
+    expect(projects[1].source).toBe('folder');
   });
 });
 

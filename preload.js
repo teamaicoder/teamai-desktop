@@ -63,6 +63,7 @@ try {
     onWorkbenchEvent:     cb     => ipcRenderer.on('workbench:event', (_, p) => cb(p)),
     onWorkbenchConfigure: cb     => ipcRenderer.on('workbench:configure', () => cb()),
     projectsImport:       opts   => ipcRenderer.invoke('projects:import', opts),
+    projectsAddFolder:    opts   => ipcRenderer.invoke('projects:add-folder', opts),
     onProjectsCommand:    cb     => ipcRenderer.on('projects:command', (_, p) => cb(p)),
 
     // Files opened from Finder; appReady() returns any that arrived before init finished

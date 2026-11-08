@@ -54,6 +54,7 @@ test.describe('Session restore', () => {
   test.afterEach(() => tmp.cleanup());
 
   test('tabs in Build and a section, and the active section, come back after a relaunch', async () => {
+    test.setTimeout(90 * 1000);   // two launches; CI runners are slower than a dev Mac
     const first = await launchApp();
     try {
       const { win } = first;

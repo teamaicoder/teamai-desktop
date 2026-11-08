@@ -2342,10 +2342,11 @@ function homeKey(tab) {
   return tab.mode === 'project' ? `project:${activeProject()?.root || ''}` : 'all';
 }
 
+// Always load by URL, never reload: the first load can fail because the page
+// hasn't been rendered yet, and reloading a failed load reloads the error page.
 function navigateHome(tab, url) {
   if (!url) return;
-  if (tab.url === url) window.api.browserReload(tab.viewId).catch(() => {});
-  else window.api.browserNavigate(tab.viewId, url).catch(() => {});
+  window.api.browserNavigate(tab.viewId, url).catch(() => {});
   tab.url = url;
 }
 
@@ -2715,6 +2716,7 @@ async function init() {
 }
 
 // Test helpers — only used when NODE_ENV=test (Playwright UI tests)
+window._testAddProjectFolder = dir => runAddProjectFolder(dir);
 window._testNavigateTo = async (dir) => {
   state.rootDir = dir;
   await navigateTo(dir);
@@ -2924,6 +2926,7 @@ function openProjectMenu() {
   }
   const actions = [['Import from Portfolio…', () => runProjectImport({ pick: true })]];
   if (state.prefs.portfolioDir) actions.push(['Re-import projects', () => runProjectImport({})]);
+  actions.push(['Add project folder…', () => runAddProjectFolder()]);
   if (activeProject() && state.currentDir) actions.push(['Use current folder as project folder', pinProjectRoot]);
   for (const [label, fn] of actions) {
     const item = document.createElement('button');
@@ -2968,7 +2971,7 @@ async function runProjectImport({ pick = false, portfolioDir, workspaceRoot } = 
     existing: state.prefs.projects,
     pick,
   });
-  if (!result) return;
+  if (!result || result.error) return;   // cancelled, or refused (main shows why)
   state.prefs.portfolioDir = result.portfolioDir;
   state.prefs.workspaceRoot = result.workspaceRoot;
   state.prefs.projects = result.projects;
@@ -2976,6 +2979,17 @@ async function runProjectImport({ pick = false, portfolioDir, workspaceRoot } = 
   await savePrefs();
   renderProjectSwitcher();
   renderStarredSection();
+}
+
+// Add one folder as a project (Projects → Add Project Folder…). `dir` skips
+// the folder picker (tests).
+async function runAddProjectFolder(dir) {
+  const result = await window.api.projectsAddFolder({ existing: state.prefs.projects, dir });
+  if (!result) return;
+  state.prefs.projects = result.projects;
+  await savePrefs();
+  await selectProject(result.project.slug);
+  renderProjectSwitcher();
 }
 
 // The active project's folder and repos, at the top of the Build sidebar
@@ -3011,7 +3025,7 @@ function initProjects() {
     if (projectMenu.open && !e.target.closest('#project-menu') && !e.target.closest('#project-switcher')) closeProjectMenu();
   });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && projectMenu.open) closeProjectMenu(); });
-  window.api.onProjectsCommand(({ type }) => runProjectImport({ pick: type === 'import' }));
+  window.api.onProjectsCommand(({ type }) => (type === 'add-folder' ? runAddProjectFolder() : runProjectImport({ pick: type === 'import' })));
   renderProjectSwitcher();
 }
 

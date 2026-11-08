@@ -9,7 +9,7 @@ const {
   loadPrefs, savePrefs, normalizeWorkbenchUrl,
   chromeUserAgent, windowOpenTarget,
   FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
-  importProjects,
+  importProjects, addFolderProject,
   parseOpenRequest,
   parseRenderedPage, fillProjectCommand, outputTail,
   gitBranch,
@@ -274,9 +274,37 @@ ipcMain.handle('projects:import', async (event, { portfolioDir, workspaceRoot, e
     if (res.canceled || !res.filePaths[0]) return null;
     workspaceRoot = res.filePaths[0];
   }
-  const projects = importProjects({ portfolioDir, workspaceRoot, existing });
+  let projects;
+  try {
+    projects = importProjects({ portfolioDir, workspaceRoot, existing });
+  } catch (e) {
+    console.warn(`[main] projects:import refused: ${e.message}`);
+    if (process.env.NODE_ENV !== 'test') {
+      await dialog.showMessageBox(win, { type: 'warning', message: 'No projects imported', detail: e.message });
+    }
+    return { error: e.message };
+  }
   console.log(`[main] projects:import ${projects.length} projects from ${portfolioDir}`);
   return { portfolioDir, workspaceRoot, projects };
+});
+
+// Add one folder as a project (for a repo that isn't in the portfolio).
+// With dir given (tests), no dialog is shown.
+ipcMain.handle('projects:add-folder', async (event, { existing, dir } = {}) => {
+  if (!dir) {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Add a project folder',
+      message: 'A project folder: a repo, or a folder of repos',
+      defaultPath: defaultWorkspaceRoot(),
+      properties: ['openDirectory'],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    dir = res.filePaths[0];
+  }
+  const result = addFolderProject(existing, dir);
+  console.log(`[main] projects:add-folder ${result.project.slug} from ${dir}`);
+  return result;
 });
 
 // ── Section home: status board refresh ────────────────────────────────────────
@@ -836,6 +864,7 @@ function addWorkbenchMenu() {
     submenu: [
       { id: 'projects-import', label: 'Import from Portfolio…', click: () => sendToWindows('projects:command', { type: 'import' }) },
       { id: 'projects-reimport', label: 'Re-import Projects', click: () => sendToWindows('projects:command', { type: 'reimport' }) },
+      { id: 'projects-add-folder', label: 'Add Project Folder…', click: () => sendToWindows('projects:command', { type: 'add-folder' }) },
     ],
   }));
   Menu.setApplicationMenu(menu);
