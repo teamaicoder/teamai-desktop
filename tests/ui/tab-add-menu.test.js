@@ -34,6 +34,21 @@ test.describe('tab-bar + button', () => {
     await expect(menu.locator('text=New Terminal')).toBeVisible();
   });
 
+  test('the open menu survives tab bar re-renders (e.g. a page loading in another tab)', async () => {
+    await win.locator('#tab-bar .tab-add-btn').click();
+    const menu = win.locator('.tab-add-menu:visible');
+    await expect(menu).toHaveCount(1);
+    const before = await menu.elementHandle();
+    await win.evaluate(() => { renderTabBar(); renderTabBar(); renderTabBar(); });
+    await expect(menu).toHaveCount(1);
+    expect(await before.evaluate(el => el.isConnected)).toBe(true);
+    await menu.locator('button:has-text("New Browser")').click();
+    await expect(win.locator('#tab-bar .tab-chip.browser-tab')).toHaveCount(1);
+    await expect(win.locator('.tab-add-menu:visible')).toHaveCount(0);
+    // Exactly one menu element per tab bar is left in the page
+    expect(await win.locator('.tab-add-menu').count()).toBeLessThanOrEqual(await win.locator('.tab-add-btn').count());
+  });
+
   test('clicking outside the menu closes it', async () => {
     const btn = win.locator('.tab-add-btn').first();
     await btn.click();

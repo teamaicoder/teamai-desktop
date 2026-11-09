@@ -110,10 +110,12 @@ document.addEventListener('click', e => {
   }
 }, true);
 
+// Tab bars re-render often (a page loading in a browser tab updates its title
+// and URL), so an open menu is kept and reused by the next buildTabAddButton
+// instead of being removed while the user is choosing from it.
 function clearTabAddMenus(bar) {
   const prev = barMenus.get(bar);
-  if (prev) {
-    if (_activeTabMenu === prev) _activeTabMenu = null;
+  if (prev && _activeTabMenu !== prev) {
     prev.remove();
     barMenus.delete(bar);
   }
@@ -129,17 +131,23 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewS
   btn.textContent = '+';
   wrap.appendChild(btn);
 
-  const menu = document.createElement('div');
-  menu.className = 'tab-add-menu';
+  const open = barMenus.get(bar);
+  const reuse = open && open.isConnected && _activeTabMenu === open;
+  const menu = reuse ? open : document.createElement('div');
   menu._btn = btn;
   menu._onClose = onClose ?? null;
-  document.body.appendChild(menu);
-  barMenus.set(bar, menu);
 
   function closeMenu() {
     menu.style.display = 'none';
     if (_activeTabMenu === menu) _activeTabMenu = null;
-    if (onClose) onClose();
+    if (menu._onClose) menu._onClose();
+  }
+  menu._close = closeMenu;
+
+  if (!reuse) {
+    menu.className = 'tab-add-menu';
+    document.body.appendChild(menu);
+    barMenus.set(bar, menu);
   }
 
   function addItem(icon, label, handler) {
@@ -149,10 +157,16 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewS
     item.addEventListener('click', e => {
       e.stopPropagation();
       console.log(`[app] tab + menu: "${label}" clicked`);
-      closeMenu();
+      menu._close();
       handler();
     });
     menu.appendChild(item);
+  }
+
+  if (reuse) {
+    // Keep the open menu (and its items) as they are; only re-point the button
+    wireTabAddButton(btn, menu, onOpen);
+    return wrap;
   }
 
   addItem(IC.newFile,  'New File',    () => onNewFile().catch(err => console.error('[app] New File failed:', err)));
@@ -164,6 +178,11 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewS
     addItem(IC.split, 'New Chat + Preview', () => Promise.resolve(onNewSplit()).catch(err => console.error('[app] New Chat + Preview failed:', err)));
   }
 
+  wireTabAddButton(btn, menu, onOpen);
+  return wrap;
+}
+
+function wireTabAddButton(btn, menu, onOpen) {
   btn.addEventListener('click', e => {
     e.stopPropagation();
     const isOpen = menu.style.display === 'flex';
@@ -174,7 +193,7 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewS
       _activeTabMenu = null;
     }
     if (isOpen) {
-      closeMenu();
+      menu._close();
     } else {
       const r = btn.getBoundingClientRect();
       menu.style.left = r.left + 'px';
@@ -184,8 +203,6 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewS
       if (onOpen) onOpen();
     }
   });
-
-  return wrap;
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
