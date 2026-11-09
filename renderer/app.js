@@ -110,10 +110,12 @@ document.addEventListener('click', e => {
   }
 }, true);
 
+// Tab bars re-render often (a page loading in a browser tab updates its title
+// and URL), so an open menu is kept and reused by the next buildTabAddButton
+// instead of being removed while the user is choosing from it.
 function clearTabAddMenus(bar) {
   const prev = barMenus.get(bar);
-  if (prev) {
-    if (_activeTabMenu === prev) _activeTabMenu = null;
+  if (prev && _activeTabMenu !== prev) {
     prev.remove();
     barMenus.delete(bar);
   }
@@ -129,17 +131,23 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewS
   btn.textContent = '+';
   wrap.appendChild(btn);
 
-  const menu = document.createElement('div');
-  menu.className = 'tab-add-menu';
+  const open = barMenus.get(bar);
+  const reuse = open && open.isConnected && _activeTabMenu === open;
+  const menu = reuse ? open : document.createElement('div');
   menu._btn = btn;
   menu._onClose = onClose ?? null;
-  document.body.appendChild(menu);
-  barMenus.set(bar, menu);
 
   function closeMenu() {
     menu.style.display = 'none';
     if (_activeTabMenu === menu) _activeTabMenu = null;
-    if (onClose) onClose();
+    if (menu._onClose) menu._onClose();
+  }
+  menu._close = closeMenu;
+
+  if (!reuse) {
+    menu.className = 'tab-add-menu';
+    document.body.appendChild(menu);
+    barMenus.set(bar, menu);
   }
 
   function addItem(icon, label, handler) {
@@ -149,10 +157,16 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewS
     item.addEventListener('click', e => {
       e.stopPropagation();
       console.log(`[app] tab + menu: "${label}" clicked`);
-      closeMenu();
+      menu._close();
       handler();
     });
     menu.appendChild(item);
+  }
+
+  if (reuse) {
+    // Keep the open menu (and its items) as they are; only re-point the button
+    wireTabAddButton(btn, menu, onOpen);
+    return wrap;
   }
 
   addItem(IC.newFile,  'New File',    () => onNewFile().catch(err => console.error('[app] New File failed:', err)));
@@ -164,6 +178,11 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewS
     addItem(IC.split, 'New Chat + Preview', () => Promise.resolve(onNewSplit()).catch(err => console.error('[app] New Chat + Preview failed:', err)));
   }
 
+  wireTabAddButton(btn, menu, onOpen);
+  return wrap;
+}
+
+function wireTabAddButton(btn, menu, onOpen) {
   btn.addEventListener('click', e => {
     e.stopPropagation();
     const isOpen = menu.style.display === 'flex';
@@ -174,7 +193,7 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewS
       _activeTabMenu = null;
     }
     if (isOpen) {
-      closeMenu();
+      menu._close();
     } else {
       const r = btn.getBoundingClientRect();
       menu.style.left = r.left + 'px';
@@ -184,8 +203,6 @@ function buildTabAddButton(bar, { onNewFile, onNewBrowser, onNewTerminal, onNewS
       if (onOpen) onOpen();
     }
   });
-
-  return wrap;
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -2198,7 +2215,7 @@ class FileBrowserSection {
         return;
       }
       if (!tab) {
-        const viewId = await window.api.browserCreate();
+        const viewId = await window.api.browserCreate({ home: this.id });
         tab = { id: this.homeTabId, type: 'home', title: 'Status', pinned: true, viewId, url: '', mode: 'all', pages: {}, lastRun: {} };
         this.s.tabs.unshift(tab);
         this.syncTabContents();
@@ -2287,6 +2304,7 @@ function buildHomePane(pane, tab, sec) {
         <button type="button" class="home-mode-btn" data-mode="project">This project</button>
       </div>
       <span class="home-status"></span>
+      <span class="home-note" hidden></span>
       <button type="button" class="browser-nav-btn home-refresh" title="Refresh">${IC.reload}<span>Refresh</span></button>
     </div>
     <div class="home-error" hidden><pre></pre></div>
@@ -2325,7 +2343,7 @@ function updateHomeToolbar(sec, tab) {
   }
   const key = homeKey(tab);
   const status = pane.querySelector('.home-status');
-  status.textContent = tab.running === key ? 'Refreshing…' : tab.lastRun[key] ? `updated ${hhmm(new Date(tab.lastRun[key]))}` : '';
+  status.textContent = tab.actionRunning ? 'Running action…' : tab.running === key ? 'Refreshing…' : tab.lastRun[key] ? `updated ${hhmm(new Date(tab.lastRun[key]))}` : '';
   pane.querySelector('.home-refresh').disabled = tab.running === key;
 }
 
@@ -2416,6 +2434,8 @@ function openHomeDialog(sectionId) {
         <input type="text" id="home-page-input" spellcheck="false" placeholder="~/reports/board.html"></label>
       <label>Project refresh command <span>({root} is the active project's folder; it prints the page it wrote)</span>
         <input type="text" id="home-project-input" spellcheck="false" placeholder="cd {root} && ./scripts/render-status.sh"></label>
+      <label>Action command <span>(optional; runs for the board's teamaicoder://action links, with the payload JSON on stdin)</span>
+        <input type="text" id="home-action-input" spellcheck="false" placeholder="./scripts/board-action.sh"></label>
       <p class="invalid" id="home-invalid" hidden>Set a page, or a project refresh command.</p>
       <div class="workbench-dialog-actions">
         <button type="button" class="workbench-btn" id="home-dialog-cancel">Cancel</button>
@@ -2427,6 +2447,7 @@ function openHomeDialog(sectionId) {
   field('#home-refresh-input').value = cfg.refresh || '';
   field('#home-page-input').value = cfg.page || '';
   field('#home-project-input').value = cfg.projectRefresh || '';
+  field('#home-action-input').value = cfg.actionCommand || '';
   field('#home-refresh-input').focus();
 
   const close = () => {
@@ -2442,6 +2463,7 @@ function openHomeDialog(sectionId) {
       refresh: field('#home-refresh-input').value.trim() || null,
       page: field('#home-page-input').value.trim() || null,
       projectRefresh: field('#home-project-input').value.trim() || null,
+      actionCommand: field('#home-action-input').value.trim() || null,
     };
     if (!entry.page && !entry.projectRefresh) { field('#home-invalid').hidden = false; return; }
     await setSectionHome(sectionId, entry);
@@ -2464,9 +2486,56 @@ async function setSectionHome(sectionId, entry) {
   if (sec.ready) await sec.ensureHome();
 }
 
+// A brief success message in the Status tab's toolbar
+const HOME_NOTE_MS = 8000;
+
+function showHomeNote(sec, tab, message) {
+  const note = homePane(sec, tab)?.querySelector('.home-note');
+  if (!note) return;
+  clearTimeout(tab.noteTimer);
+  note.textContent = message;
+  note.title = message;
+  note.hidden = false;
+  tab.noteTimer = setTimeout(() => { note.hidden = true; }, HOME_NOTE_MS);
+}
+
+// Board actions (teamaicoder:// links in a Status tab), run by main:
+//   terminal       open a Chat + Preview tab in the section running claude
+//   action-start   the action command started
+//   action-done    it succeeded: show its message, refresh the board now
+//   action-failed  it failed: show its error output
+//   error          the link was refused (unknown project, no action command…)
+async function onHomeEvent({ section, type, message, cwd, command }) {
+  const sec = SECTIONS[section];
+  if (!sec) return;
+  const tab = sec.s.tabs.find(t => t.type === 'home');
+  if (type === 'terminal') {
+    showSection(section);
+    const split = await sec.openSplitTab(cwd, { input: `${command}\r` });
+    const ti = split && terminals.get(split.ptyId);
+    if (ti) requestAnimationFrame(() => ti.term.focus());
+    return;
+  }
+  if (!tab) return;
+  if (type === 'action-start') {
+    tab.actionRunning = true;
+    showHomeError(sec, tab, null);
+  } else if (type === 'action-done') {
+    tab.actionRunning = false;
+    showHomeError(sec, tab, null);
+    showHomeNote(sec, tab, message || 'Done.');
+    showHome(sec, tab, { force: true });
+  } else if (type === 'action-failed' || type === 'error') {
+    if (type === 'action-failed') tab.actionRunning = false;
+    showHomeError(sec, tab, message || 'The action failed.');
+  }
+  updateHomeToolbar(sec, tab);
+}
+
 function initSectionHome() {
   window.api.onHomeConfigure(({ section }) => openHomeDialog(section));
   window.api.onHomeClear(({ section }) => setSectionHome(section, null));
+  window.api.onHomeEvent(ev => onHomeEvent(ev).catch(err => console.error('[app] board action failed:', err)));
 }
 
 // ── Session: reopen the last tabs on launch ──────────────────────────────────
@@ -2864,12 +2933,26 @@ function projectChips(p) {
   return dot + phase;
 }
 
+// A project's folder name (or slug when it has no folder), when it differs
+// from the title: a folder added as a project takes its title from RELEASE.md
+// or PRODUCT.md, which may not match the folder it was added from
+function projectAltName(p) {
+  const name = p.root ? window.api.basename(p.root) : p.slug;
+  return name && name.toLowerCase() !== String(p.title || '').toLowerCase() ? name : '';
+}
+
+// The title, with a differing folder name as muted secondary text
+function projectTitleHtml(p, cls) {
+  const alt = projectAltName(p);
+  return `<span class="${cls}">${esc(p.title)}${alt ? `<span class="project-alt-name"> · ${esc(alt)}</span>` : ''}</span>`;
+}
+
 function renderProjectSwitcher() {
   const el = document.getElementById('project-switcher');
   if (!el) return;
   const p = activeProject();
   el.innerHTML = p
-    ? `${projectChips(p)}<span class="project-switcher-title">${esc(p.title)}</span>${IC.chevron}`
+    ? `${projectChips(p)}${projectTitleHtml(p, 'project-switcher-title')}${IC.chevron}`
     : `<span class="project-switcher-title">${state.prefs.projects.length ? 'Choose project' : 'Projects'}</span>${IC.chevron}`;
   el.title = p ? (p.oneLiner || p.title) : 'Choose or import a project';
 }
@@ -2915,7 +2998,7 @@ function openProjectMenu() {
     item.dataset.slug = p.slug;
     item.disabled = !p.root;
     item.title = p.root ? p.root : 'No local folder found for this project';
-    item.innerHTML = `${projectChips(p)}<span class="project-menu-title">${esc(p.title)}</span>`;
+    item.innerHTML = `${projectChips(p)}${projectTitleHtml(p, 'project-menu-title')}`;
     item.onclick = () => { closeProjectMenu(); selectProject(p.slug); };
     menu.appendChild(item);
   }
@@ -2986,10 +3069,33 @@ async function runProjectImport({ pick = false, portfolioDir, workspaceRoot } = 
 async function runAddProjectFolder(dir) {
   const result = await window.api.projectsAddFolder({ existing: state.prefs.projects, dir });
   if (!result) return;
+  const updated = state.prefs.projects.some(p => p.slug === result.project.slug);
   state.prefs.projects = result.projects;
   await savePrefs();
   await selectProject(result.project.slug);
   renderProjectSwitcher();
+  const p = result.project;
+  const alt = projectAltName(p);
+  showProjectNote(`${updated ? 'Updated' : 'Added'} ${p.title}${alt ? ` (${alt})` : ''}`);
+}
+
+// A brief confirmation beside the project switcher
+const PROJECT_NOTE_MS = 6000;
+let projectNoteTimer = null;
+
+function showProjectNote(message) {
+  let note = document.getElementById('project-note');
+  if (!note) {
+    note = document.createElement('span');
+    note.id = 'project-note';
+    note.className = 'project-note';
+    note.setAttribute('role', 'status');
+    document.getElementById('project-switcher').after(note);
+  }
+  note.textContent = message;
+  note.hidden = false;
+  clearTimeout(projectNoteTimer);
+  projectNoteTimer = setTimeout(() => { note.hidden = true; }, PROJECT_NOTE_MS);
 }
 
 // The active project's folder and repos, at the top of the Build sidebar

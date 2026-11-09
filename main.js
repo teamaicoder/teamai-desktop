@@ -11,7 +11,8 @@ const {
   FIREFOX_SIGN_IN_URLS, signInRequestHeaders,
   importProjects, addFolderProject,
   parseOpenRequest,
-  parseRenderedPage, fillProjectCommand, outputTail,
+  HOME_SECTIONS, parseRenderedPage, fillProjectCommand, outputTail,
+  isAppUrl, parseAppUrl, claudeCommand, actionFollowup, lastLine, addInAppMarker, stripInAppMarker,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('./main/handlers');
@@ -314,15 +315,19 @@ ipcMain.handle('projects:add-folder', async (event, { existing, dir } = {}) => {
 const HOME_TIMEOUT_MS = 90 * 1000;
 const homeRuns = new Map();
 
-function runShell(command, cwd) {
+// Run a command in the user's login shell. input, when given, is written to
+// its stdin (which is otherwise closed at once).
+function runShell(command, cwd, { input = '', timeout = HOME_TIMEOUT_MS } = {}) {
   const shell = process.env.SHELL || '/bin/sh';
   return new Promise(resolve => {
-    execFile(shell, ['-lc', command], { cwd, timeout: HOME_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
+    const child = execFile(shell, ['-lc', command], { cwd, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
       (err, stdout, stderr) => resolve({
         code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
         timedOut: !!(err && err.killed),
         stdout: stdout || '', stderr: stderr || '',
       }));
+    child.stdin.on('error', () => {});   // the command may exit without reading it
+    child.stdin.end(input);
   });
 }
 
@@ -353,6 +358,69 @@ ipcMain.handle('home:refresh', (_, { section, mode, root } = {}) => {
   homeRuns.set(key, run);
   return run;
 });
+
+// ── Board actions: teamaicoder:// links in a Status tab ───────────────────────
+// Only a Status tab's view acts on these (see handleAppUrl); every other view
+// drops them. The terminal link opens a Chat + Preview tab in the section at
+// the project's folder running `claude <prompt>`. The action link runs the
+// section's actionCommand (from prefs on disk) with the payload on stdin.
+const ACTION_TIMEOUT_MS = 60 * 1000;
+const actionRuns = new Set();   // sections with an action running
+
+function homeEvent(section, type, payload = {}) {
+  sendToWindows('home:event', { section, type, ...payload });
+}
+
+// Open a terminal for a validated { project, prompt } request
+function openBoardTerminal(section, { project, prompt }) {
+  const p = loadPrefs(prefsPath).projects.find(x => x.slug === project);
+  if (!p) return homeEvent(section, 'error', { message: `Unknown project "${project}". Import it from the Projects menu first.` });
+  if (!p.root || !fs.existsSync(p.root)) return homeEvent(section, 'error', { message: `Project "${project}" has no folder on this computer.` });
+  console.log(`[main] board terminal ${section} project=${project}`);
+  homeEvent(section, 'terminal', { cwd: p.root, command: claudeCommand(prompt), project, title: p.title || project });
+}
+
+async function runBoardAction(section, { payload, json }) {
+  const cfg = loadPrefs(prefsPath).sectionHome[section];
+  if (!cfg || !cfg.actionCommand) {
+    return homeEvent(section, 'error', { message: 'No action command is set for this status board. Set one with Set Status Board….' });
+  }
+  if (actionRuns.has(section)) return homeEvent(section, 'error', { message: 'An action is already running for this board.' });
+  const followup = actionFollowup(payload);
+  if (followup && !followup.ok) return homeEvent(section, 'error', { message: followup.error });
+  actionRuns.add(section);
+  homeEvent(section, 'action-start');
+  console.log(`[main] board action ${section} (${json.length} bytes)`);
+  let res;
+  try {
+    res = await runShell(cfg.actionCommand, os.homedir(), { input: json, timeout: ACTION_TIMEOUT_MS });
+  } finally {
+    actionRuns.delete(section);
+  }
+  if (res.timedOut) return homeEvent(section, 'action-failed', { message: `The action command timed out after ${ACTION_TIMEOUT_MS / 1000} s.` });
+  if (res.code !== 0) {
+    return homeEvent(section, 'action-failed', {
+      message: outputTail(res.stderr) || outputTail(res.stdout) || `The action command failed (exit ${res.code}).`,
+    });
+  }
+  homeEvent(section, 'action-done', { message: lastLine(res.stdout) || 'Done.' });
+  if (followup) openBoardTerminal(section, followup);
+}
+
+// A teamaicoder:// URL from a preview view. Returns true when it was one (the
+// caller then stops the navigation or popup). Acted on only for Status views.
+function handleAppUrl(url, homeSection) {
+  if (!isAppUrl(url)) return false;
+  if (!homeSection) {
+    console.log('[main] ignored teamaicoder:// link outside a Status tab');
+    return true;
+  }
+  const req = parseAppUrl(url);
+  if (!req.ok) homeEvent(homeSection, 'error', { message: req.error });
+  else if (req.kind === 'terminal') openBoardTerminal(homeSection, req);
+  else runBoardAction(homeSection, req).catch(e => homeEvent(homeSection, 'action-failed', { message: e.message }));
+  return true;
+}
 
 // ── Git ───────────────────────────────────────────────────────────────────────
 
@@ -643,6 +711,10 @@ function previewSession() {
     ses.webRequest.onBeforeSendHeaders({ urls: FIREFOX_SIGN_IN_URLS }, (details, callback) => {
       callback({ requestHeaders: signInRequestHeaders(details.requestHeaders) });
     });
+    // teamaicoder:// links are handled by the view they're clicked in (see
+    // handleAppUrl). Registering the scheme keeps any that get past that, such
+    // as fetches or iframes, from going to the OS: they get an empty response.
+    ses.protocol.handle('teamaicoder', () => new Response(null, { status: 204 }));
     // Hide WebAuthn so sign-in pages skip passkeys Electron can't complete
     ses.registerPreloadScript({
       type: 'frame',
@@ -660,8 +732,12 @@ function previewWebPreferences() {
 // Popups and new-tab links from preview pages. Sign-in popups become child
 // windows on the same session (window.opener intact, so they close back into
 // the page); links asking for a new tab open as another preview tab.
-function handlePreviewWindowOpen(contents, parentWin, onNewTab) {
+// homeSection: the section whose Status tab this is, which may use
+// teamaicoder:// links; popups never may.
+function handlePreviewWindowOpen(contents, parentWin, onNewTab, homeSection = null) {
+  guardAppLinks(contents, homeSection);
   contents.setWindowOpenHandler(details => {
+    if (handleAppUrl(details.url, homeSection)) return { action: 'deny' };
     if (windowOpenTarget(details) === 'tab') {
       onNewTab(details.url);
       return { action: 'deny' };
@@ -682,9 +758,33 @@ function handlePreviewWindowOpen(contents, parentWin, onNewTab) {
   });
 }
 
-ipcMain.handle('browser:create', event => {
+// teamaicoder:// navigations (links, GET forms) never leave the page: a Status
+// view acts on them, any other view drops them. In a Status view, file://
+// links get the in-app marker.
+function guardAppLinks(contents, homeSection) {
+  contents.on('will-frame-navigate', details => {
+    const { url, isMainFrame } = details;
+    if (isAppUrl(url)) {
+      details.preventDefault();
+      handleAppUrl(url, isMainFrame ? homeSection : null);
+      return;
+    }
+    if (homeSection && isMainFrame) {
+      const marked = addInAppMarker(url);
+      if (marked !== url) {
+        details.preventDefault();
+        contents.loadURL(marked).catch(() => {});
+      }
+    }
+  });
+}
+
+// opts.home: the section id when this view is that section's Status tab
+ipcMain.handle('browser:create', (event, opts = {}) => {
   const id = String(++browserSeq);
   const view = new WebContentsView({ webPreferences: previewWebPreferences() });
+  const homeSection = HOME_SECTIONS.includes(opts && opts.home) ? opts.home : null;
+  view.homeSection = homeSection;
   browserViewMap.set(id, view);
   const wc = view.webContents;
 
@@ -692,23 +792,26 @@ ipcMain.handle('browser:create', event => {
     try { event.sender.send('browser:event', { id, type, ...payload }); } catch {}
   };
   const navState = () => ({ canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward() });
-  wc.on('did-navigate',         (_, url)              => fwd('navigate', { url, ...navState() }));
-  wc.on('did-navigate-in-page', (_, url, isMainFrame) => { if (isMainFrame) fwd('navigate', { url, ...navState() }); });
+  // A Status view reports URLs without the in-app marker
+  const shown = url => (homeSection ? stripInAppMarker(url) : url);
+  wc.on('did-navigate',         (_, url)              => fwd('navigate', { url: shown(url), ...navState() }));
+  wc.on('did-navigate-in-page', (_, url, isMainFrame) => { if (isMainFrame) fwd('navigate', { url: shown(url), ...navState() }); });
   wc.on('page-title-updated',   (_, title)            => fwd('title', { title }));
   wc.on('did-fail-load',        (_, code, desc, url)  => {
     if (code !== -3) console.warn(`[main] browser:fail id=${id} code=${code} ${desc} ${url}`);
   });
-  handlePreviewWindowOpen(wc, BrowserWindow.fromWebContents(event.sender), url => fwd('open-tab', { url }));
+  handlePreviewWindowOpen(wc, BrowserWindow.fromWebContents(event.sender), url => fwd('open-tab', { url }), homeSection);
 
-  console.log(`[main] browser:create → id=${id}`);
+  console.log(`[main] browser:create → id=${id}${homeSection ? ` (status: ${homeSection})` : ''}`);
   return id;
 });
 
 ipcMain.handle('browser:navigate', async (_, { id, url }) => {
   const view = browserViewMap.get(id);
   if (!view) return;
-  console.log(`[main] browser:navigate id=${id} url=${url}`);
-  await view.webContents.loadURL(url);
+  const target = view.homeSection ? addInAppMarker(url) : url;
+  console.log(`[main] browser:navigate id=${id} url=${target}`);
+  await view.webContents.loadURL(target);
 });
 
 ipcMain.handle('browser:back', (_, { id }) => {

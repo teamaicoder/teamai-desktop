@@ -410,11 +410,13 @@ function addFolderProject(existing, dir) {
 
 // ── Section home (a status board pinned first in a section) ──────────────────
 //
-// prefs.sectionHome[<section>] = { refresh, page, projectRefresh }
+// prefs.sectionHome[<section>] = { refresh, page, projectRefresh, actionCommand }
 //   refresh        shell command that (re)renders the all-projects page
 //   page           that page's URL (file:// or http(s); ~ and bare paths allowed)
 //   projectRefresh shell command template; {root} is the active project's
 //                  folder; its stdout names the per-project page it rendered
+//   actionCommand  shell command run for teamaicoder://action links on the
+//                  board; it gets the link's JSON payload on stdin
 
 const HOME_SECTIONS = ['ideas', 'design', 'plan', 'test', 'deploy', 'operate'];
 
@@ -441,6 +443,7 @@ function normalizeHomeEntry(raw, home) {
     refresh: cmd(raw.refresh),
     page: normalizePageUrl(raw.page, home),
     projectRefresh: cmd(raw.projectRefresh),
+    actionCommand: cmd(raw.actionCommand),
   };
   return entry.page || entry.projectRefresh ? entry : null;
 }
@@ -492,6 +495,121 @@ function fillProjectCommand(template, root) {
 function outputTail(text, maxLines = 6, maxChars = 800) {
   const lines = String(text || '').trimEnd().split(/\r?\n/).filter(Boolean);
   return lines.slice(-maxLines).join('\n').slice(-maxChars);
+}
+
+// ── Board actions (teamaicoder:// links in a Status tab) ─────────────────────
+//
+// A status board page acts on its items through two link forms, honoured only
+// in a Status tab (see CLAUDE.md "Board actions"):
+//   teamaicoder://terminal?project=<slug>&prompt=<text>
+//   teamaicoder://action?payload=<JSON object>
+
+const APP_SCHEME = 'teamaicoder:';
+const IN_APP_PARAM = 'in';
+const IN_APP_VALUE = 'teamaicoder';
+const PROMPT_MAX_CHARS = 4000;
+const ACTION_PAYLOAD_MAX_BYTES = 64 * 1024;
+
+function isAppUrl(url) {
+  return typeof url === 'string' && url.trim().toLowerCase().startsWith(`${APP_SCHEME}//`);
+}
+
+const SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+// A board prompt made safe to type: control characters (newlines included)
+// become spaces, then it is trimmed and capped
+function cleanPrompt(text) {
+  return String(text == null ? '' : text)
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ')
+    .trim()
+    .slice(0, PROMPT_MAX_CHARS);
+}
+
+// The shell command that starts Claude Code with a prompt, typed into a new
+// terminal: `claude '<prompt>'`, or just `claude` for an empty prompt
+function claudeCommand(prompt) {
+  const p = cleanPrompt(prompt);
+  return p ? `claude ${shellQuote(p)}` : 'claude';
+}
+
+// A terminal request { project, prompt } (from a link or an action's followup)
+// → { ok: true, project, prompt } or { ok: false, error }
+function validateTerminalRequest(req) {
+  const project = req && typeof req.project === 'string' ? req.project.trim() : '';
+  if (!project) return { ok: false, error: 'The terminal link names no project.' };
+  if (!SLUG.test(project)) return { ok: false, error: `"${project.slice(0, 80)}" is not a project slug.` };
+  const prompt = req && req.prompt != null ? cleanPrompt(req.prompt) : '';
+  return { ok: true, project, prompt };
+}
+
+// An action payload (JSON text) → { ok: true, payload, json } or { ok: false, error }
+function parseActionPayload(text) {
+  if (typeof text !== 'string' || !text.trim()) return { ok: false, error: 'The action link has no payload.' };
+  if (Buffer.byteLength(text, 'utf8') > ACTION_PAYLOAD_MAX_BYTES) {
+    return { ok: false, error: `The action payload is larger than ${ACTION_PAYLOAD_MAX_BYTES / 1024} KB.` };
+  }
+  let payload;
+  try { payload = JSON.parse(text); } catch { return { ok: false, error: 'The action payload is not valid JSON.' }; }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { ok: false, error: 'The action payload must be a JSON object.' };
+  }
+  return { ok: true, payload, json: JSON.stringify(payload) };
+}
+
+// A teamaicoder:// URL → { ok: true, kind: 'terminal', project, prompt },
+// { ok: true, kind: 'action', payload, json }, or { ok: false, error }.
+// Returns null for URLs that aren't teamaicoder:// at all.
+function parseAppUrl(url) {
+  if (!isAppUrl(url)) return null;
+  let u;
+  try { u = new URL(url.trim()); } catch { return { ok: false, error: 'The teamaicoder:// link is malformed.' }; }
+  // teamaicoder://terminal?… parses with host "terminal"; accept a path form too
+  const kind = (u.hostname || u.pathname.replace(/^\/+/, '').split('/')[0]).toLowerCase();
+  if (kind === 'terminal') {
+    const res = validateTerminalRequest({ project: u.searchParams.get('project'), prompt: u.searchParams.get('prompt') });
+    return res.ok ? { kind, ...res } : res;
+  }
+  if (kind === 'action') {
+    const res = parseActionPayload(u.searchParams.get('payload'));
+    return res.ok ? { kind, ...res } : res;
+  }
+  return { ok: false, error: `Unknown teamaicoder:// link "${kind.slice(0, 40)}".` };
+}
+
+// An action payload's followup → a validated terminal request, or null when
+// there is none. An invalid followup returns { ok: false, error }.
+function actionFollowup(payload) {
+  const f = payload && payload.followup;
+  if (f == null) return null;
+  if (typeof f !== 'object' || Array.isArray(f)) return { ok: false, error: 'The action\'s followup must be an object.' };
+  return validateTerminalRequest(f);
+}
+
+// The last non-empty line of a command's output, for a brief success message
+function lastLine(text, maxChars = 200) {
+  const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  return (lines[lines.length - 1] || '').slice(0, maxChars);
+}
+
+// Status-tab pages get ?in=teamaicoder on file:// URLs so a page can tell it
+// is inside the app. Other URLs, and ones already marked, are unchanged.
+function addInAppMarker(url) {
+  let u;
+  try { u = new URL(url); } catch { return url; }
+  if (u.protocol !== 'file:' || u.searchParams.get(IN_APP_PARAM) === IN_APP_VALUE) return url;
+  u.searchParams.append(IN_APP_PARAM, IN_APP_VALUE);
+  return u.href;
+}
+
+// The URL without the in-app marker, for comparing and remembering URLs
+function stripInAppMarker(url) {
+  let u;
+  try { u = new URL(url); } catch { return url; }
+  if (u.protocol !== 'file:') return url;
+  const params = [...u.searchParams].filter(([k, v]) => !(k === IN_APP_PARAM && v === IN_APP_VALUE));
+  if (params.length === [...u.searchParams].length) return url;
+  u.search = params.length ? new URLSearchParams(params).toString() : '';
+  return u.href;
 }
 
 // ── Opening pages in the preview ─────────────────────────────────────────────
@@ -579,6 +697,9 @@ module.exports = {
   projectFromFolder, addFolderProject,
   previewOpenUrl, parseOpenRequest,
   HOME_SECTIONS, normalizePageUrl, normalizeSectionHome, parseRenderedPage, shellQuote, fillProjectCommand, outputTail,
+  PROMPT_MAX_CHARS, ACTION_PAYLOAD_MAX_BYTES,
+  isAppUrl, parseAppUrl, cleanPrompt, claudeCommand, validateTerminalRequest, parseActionPayload,
+  actionFollowup, lastLine, addInAppMarker, stripInAppMarker,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 };

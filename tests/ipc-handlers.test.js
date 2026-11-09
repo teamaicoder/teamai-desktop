@@ -14,6 +14,9 @@ const {
   projectFromFolder, addFolderProject,
   previewOpenUrl, parseOpenRequest,
   normalizePageUrl, normalizeSectionHome, parseRenderedPage, shellQuote, fillProjectCommand, outputTail,
+  PROMPT_MAX_CHARS, ACTION_PAYLOAD_MAX_BYTES,
+  isAppUrl, parseAppUrl, cleanPrompt, claudeCommand, validateTerminalRequest, parseActionPayload,
+  actionFollowup, lastLine, addInAppMarker, stripInAppMarker,
   gitBranch,
   ptySpawn, ptyWrite, ptyResize, ptyKill,
 } = require('../main/handlers');
@@ -1108,7 +1111,7 @@ describe('normalizePageUrl', () => {
 describe('normalizeSectionHome', () => {
   test('keeps known sections with a page or a project command', () => {
     const out = normalizeSectionHome({
-      plan: { refresh: '  ./render all ', page: '~/b/index.html', projectRefresh: 'cd {root} && ./render' },
+      plan: { refresh: '  ./render all ', page: '~/b/index.html', projectRefresh: 'cd {root} && ./render', actionCommand: ' ./act ' },
       test: { projectRefresh: 'make status' },
       build: { page: '/x.html' },
       nowhere: { page: '/x.html' },
@@ -1116,8 +1119,8 @@ describe('normalizeSectionHome', () => {
       ideas: 'nonsense',
     }, '/home/u');
     expect(out).toEqual({
-      plan: { refresh: './render all', page: 'file:///home/u/b/index.html', projectRefresh: 'cd {root} && ./render' },
-      test: { refresh: null, page: null, projectRefresh: 'make status' },
+      plan: { refresh: './render all', page: 'file:///home/u/b/index.html', projectRefresh: 'cd {root} && ./render', actionCommand: './act' },
+      test: { refresh: null, page: null, projectRefresh: 'make status', actionCommand: null },
     });
   });
 
@@ -1169,5 +1172,104 @@ describe('fillProjectCommand / shellQuote / outputTail', () => {
     expect(outputTail('a\nb\n\nc\nd\ne\nf\ng\nh\n')).toBe('c\nd\ne\nf\ng\nh');
     expect(outputTail('')).toBe('');
     expect(outputTail('x'.repeat(2000)).length).toBe(800);
+  });
+});
+
+describe('board actions: teamaicoder:// links', () => {
+  const terminal = (project, prompt) =>
+    `teamaicoder://terminal?project=${encodeURIComponent(project)}${prompt == null ? '' : `&prompt=${encodeURIComponent(prompt)}`}`;
+  const action = payload => `teamaicoder://action?payload=${encodeURIComponent(payload)}`;
+
+  test('isAppUrl recognises only teamaicoder://', () => {
+    expect(isAppUrl('teamaicoder://terminal?project=a')).toBe(true);
+    expect(isAppUrl(' TeamAICoder://action')).toBe(true);
+    expect(isAppUrl('https://example.com/teamaicoder://x')).toBe(false);
+    expect(isAppUrl('teamaicoder:terminal')).toBe(false);
+    expect(isAppUrl(null)).toBe(false);
+  });
+
+  test('parseAppUrl: terminal links', () => {
+    expect(parseAppUrl(terminal('alpha', 'Fix the bug'))).toEqual({ ok: true, kind: 'terminal', project: 'alpha', prompt: 'Fix the bug' });
+    expect(parseAppUrl(terminal('alpha'))).toEqual({ ok: true, kind: 'terminal', project: 'alpha', prompt: '' });
+    // Form encoding (+ for spaces) decodes too
+    expect(parseAppUrl('teamaicoder://terminal?project=alpha&prompt=two+words').prompt).toBe('two words');
+    expect(parseAppUrl('teamaicoder://terminal?prompt=x')).toMatchObject({ ok: false });
+    expect(parseAppUrl(terminal('../etc', 'x'))).toMatchObject({ ok: false });
+    expect(parseAppUrl(terminal('a b', 'x'))).toMatchObject({ ok: false });
+  });
+
+  test('parseAppUrl: action links', () => {
+    expect(parseAppUrl(action('{"id":"Q1","answer":"yes"}'))).toEqual({
+      ok: true, kind: 'action', payload: { id: 'Q1', answer: 'yes' }, json: '{"id":"Q1","answer":"yes"}',
+    });
+    expect(parseAppUrl('teamaicoder://action')).toMatchObject({ ok: false, error: expect.stringMatching(/no payload/) });
+    expect(parseAppUrl(action('not json'))).toMatchObject({ ok: false, error: expect.stringMatching(/not valid JSON/) });
+    expect(parseAppUrl(action('[1,2]'))).toMatchObject({ ok: false, error: expect.stringMatching(/JSON object/) });
+    expect(parseAppUrl(action('"text"'))).toMatchObject({ ok: false });
+  });
+
+  test('parseAppUrl: other links', () => {
+    expect(parseAppUrl('https://example.com')).toBeNull();
+    expect(parseAppUrl('teamaicoder://delete-everything')).toMatchObject({ ok: false, error: expect.stringMatching(/Unknown/) });
+  });
+
+  test('parseActionPayload caps the payload at 64 KB', () => {
+    const big = JSON.stringify({ x: 'a'.repeat(ACTION_PAYLOAD_MAX_BYTES) });
+    expect(parseActionPayload(big)).toMatchObject({ ok: false, error: expect.stringMatching(/64 KB/) });
+    expect(parseActionPayload(JSON.stringify({ x: 'a'.repeat(1000) })).ok).toBe(true);
+  });
+
+  test('cleanPrompt strips control characters and caps the length', () => {
+    expect(cleanPrompt('line one\nline two\r\n\tend\u0007')).toBe('line one line two end');
+    expect(cleanPrompt('  \u001b[31mred  ')).toBe('[31mred');
+    expect(cleanPrompt(null)).toBe('');
+    expect(cleanPrompt('x'.repeat(5000))).toHaveLength(PROMPT_MAX_CHARS);
+  });
+
+  test('claudeCommand quotes the prompt as one shell argument', () => {
+    expect(claudeCommand('')).toBe('claude');
+    expect(claudeCommand('  \n ')).toBe('claude');
+    expect(claudeCommand('fix it')).toBe("claude 'fix it'");
+    expect(claudeCommand("it's $HOME; `rm -rf /` \"q\"")).toBe("claude 'it'\\''s $HOME; `rm -rf /` \"q\"'");
+    expect(claudeCommand('a\nb')).toBe("claude 'a b'");
+  });
+
+  test('claudeCommand output is one argument to a real shell', () => {
+    const { execFileSync } = require('child_process');
+    const prompt = "it's $HOME; `echo no` \"q\" \\ $(echo no) * ?";
+    const cmd = claudeCommand(prompt).replace(/^claude /, 'printf "%s|" ');
+    expect(execFileSync('/bin/sh', ['-c', cmd], { encoding: 'utf8' })).toBe(`${prompt}|`);
+  });
+
+  test('validateTerminalRequest / actionFollowup', () => {
+    expect(validateTerminalRequest({ project: 'alpha', prompt: 'go' })).toEqual({ ok: true, project: 'alpha', prompt: 'go' });
+    expect(validateTerminalRequest({ project: '' })).toMatchObject({ ok: false });
+    expect(validateTerminalRequest(null)).toMatchObject({ ok: false });
+    expect(actionFollowup({ id: 1 })).toBeNull();
+    expect(actionFollowup({ followup: { project: 'alpha', prompt: 'next\nstep' } })).toEqual({ ok: true, project: 'alpha', prompt: 'next step' });
+    expect(actionFollowup({ followup: 'alpha' })).toMatchObject({ ok: false });
+    expect(actionFollowup({ followup: { prompt: 'x' } })).toMatchObject({ ok: false });
+  });
+
+  test('lastLine is the last non-empty output line', () => {
+    expect(lastLine('working\nSaved answer\n\n')).toBe('Saved answer');
+    expect(lastLine('')).toBe('');
+    expect(lastLine('x'.repeat(500))).toHaveLength(200);
+  });
+
+  test('addInAppMarker / stripInAppMarker', () => {
+    expect(addInAppMarker('file:///b/board.html')).toBe('file:///b/board.html?in=teamaicoder');
+    expect(addInAppMarker('file:///b/board.html?v=2#q')).toBe('file:///b/board.html?v=2&in=teamaicoder#q');
+    expect(addInAppMarker('file:///b/board.html?in=teamaicoder')).toBe('file:///b/board.html?in=teamaicoder');
+    expect(addInAppMarker('https://example.com/')).toBe('https://example.com/');
+    expect(addInAppMarker('not a url')).toBe('not a url');
+
+    expect(stripInAppMarker('file:///b/board.html?in=teamaicoder')).toBe('file:///b/board.html');
+    expect(stripInAppMarker('file:///b/board.html?v=2&in=teamaicoder#q')).toBe('file:///b/board.html?v=2#q');
+    expect(stripInAppMarker('file:///b/board.html?in=other')).toBe('file:///b/board.html?in=other');
+    expect(stripInAppMarker('https://example.com/?in=teamaicoder')).toBe('https://example.com/?in=teamaicoder');
+    for (const url of ['file:///b/a.html', 'file:///b/a%20b.html?x=1#h']) {
+      expect(stripInAppMarker(addInAppMarker(url))).toBe(url);
+    }
   });
 });
