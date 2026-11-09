@@ -144,6 +144,8 @@ test.describe('Board actions', () => {
 
       // An empty prompt starts plain `claude`; the page itself never navigated
       await chips.first().click();
+      // Wait until the Status tab's view is the one shown again before clicking in it
+      await expect.poll(async () => (await shownView(app))?.text, { timeout: 15000 }).toMatch(/^BOARD /);
       await click(app, 'term-empty');
       await expect(chips).toHaveCount(3, { timeout: 8000 });
       await expect.poll(claude.calls, { timeout: 10000 }).toContain(`cwd:${proj.projectRoot}\nargc:0\n--\n`);
@@ -219,8 +221,13 @@ test.describe('Board actions', () => {
     try {
       await setHome(win, 'plan', { ...board.entry, actionCommand: null });
       await expect.poll(async () => (await shownView(app))?.text, { timeout: 15000 }).toMatch(/^BOARD /);
-      await click(app, 'act');
-      await expect(win.locator('#section-plan .tab-pane.home-pane .home-error')).toContainText('No action command', { timeout: 5000 });
+      // The settings change refreshes the board; a click during that reload is
+      // lost, so click until the error shows (with no command, clicks are harmless)
+      const error = win.locator('#section-plan .tab-pane.home-pane .home-error');
+      await expect.poll(async () => {
+        await click(app, 'act');
+        return (await error.textContent()) || '';
+      }, { timeout: 15000 }).toContain('No action command');
       expect(board.stdin()).toBeNull();
     } finally {
       await app.close();
