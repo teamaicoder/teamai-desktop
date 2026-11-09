@@ -93,7 +93,7 @@ test.describe('Section status board', () => {
 
       const allUrl = pathToFileURL(path.join(board.dir, 'all.html')).href;
       await expect.poll(async () => (await homeView(app))?.text, { timeout: 15000 }).toBe('ALL 1');
-      expect((await homeView(app)).url).toBe(allUrl);
+      expect((await homeView(app)).url).toBe(`${allUrl}?in=teamaicoder`);
       const pane = win.locator('#section-plan .tab-pane.home-pane');
       await expect(pane.locator('.home-status')).toHaveText(/^updated \d\d:\d\d$/);
 
@@ -114,6 +114,7 @@ test.describe('Section status board', () => {
         return view.webContents.executeJavaScript("document.getElementById('sub').click()");
       });
       await expect.poll(async () => (await homeView(app))?.text, { timeout: 5000 }).toBe('SUB');
+      expect((await homeView(app)).url).toBe(`${pathToFileURL(path.join(board.dir, 'sub.html')).href}?in=teamaicoder`);
       await expect(chips).toHaveCount(1);
     } finally {
       await app.close();
@@ -139,7 +140,7 @@ test.describe('Section status board', () => {
       await projectBtn.click();
       await expect(projectBtn).toHaveClass(/active/);
       await expect.poll(async () => (await homeView(app))?.text, { timeout: 15000 }).toBe('PROJECT alpha 2');
-      expect((await homeView(app)).url).toBe(pathToFileURL(path.join(board.dir, 'proj-alpha.html')).href);
+      expect((await homeView(app)).url).toBe(`${pathToFileURL(path.join(board.dir, 'proj-alpha.html')).href}?in=teamaicoder`);
 
       await pane.locator('.home-mode-btn[data-mode="all"]').click();
       await expect.poll(async () => (await homeView(app))?.text, { timeout: 15000 }).toMatch(/^ALL /);
@@ -183,8 +184,10 @@ test.describe('Section status board', () => {
       await dialog.locator('#home-refresh-input').fill(board.entry.refresh);
       await dialog.locator('#home-page-input').fill(board.entry.page);
       await dialog.locator('#home-project-input').fill(board.entry.projectRefresh);
+      await dialog.locator('#home-action-input').fill('  ./board-action.sh ');
       await dialog.locator('#home-dialog-save').click();
       await expect(dialog).toHaveCount(0);
+      expect((await win.evaluate(() => window.api.loadPrefs())).sectionHome.plan.actionCommand).toBe('./board-action.sh');
 
       await expect(win.locator('.nav-tab[data-section="plan"]')).toHaveClass(/active/);
       const chips = win.locator('#section-plan .fbs-tab-bar .tab-chip');

@@ -85,18 +85,34 @@ test.describe('Projects', () => {
       await expect(win.locator('#project-menu .project-menu-item[data-slug]')).toHaveCount(2);
       await win.keyboard.press('Escape');
 
+      // Its title comes from RELEASE.md; the folder name shows beside it
       await win.evaluate(dir => window._testAddProjectFolder(dir), solo);
-      await expect(win.locator('#project-switcher')).toContainText('Solo Project');
+      await expect(win.locator('#project-switcher')).toContainText('Solo Project · solo');
+      await expect(win.locator('#project-switcher .project-alt-name')).toHaveText(' · solo');
+      await expect(win.locator('#project-note')).toHaveText('Added Solo Project (solo)');
       await win.locator('#project-switcher').click();
       const items = win.locator('#project-menu .project-menu-item[data-slug]');
       await expect(items).toHaveCount(3);
-      await expect(items.nth(2)).toContainText('Solo Project');
+      await expect(items.nth(2)).toContainText('Solo Project · solo');
+      await expect(items.nth(2).locator('.project-alt-name')).toHaveText(' · solo');
+      // Portfolio projects show a differing folder name too
+      await expect(items.nth(1).locator('.project-alt-name')).toHaveText(' · beta');
       await win.keyboard.press('Escape');
 
-      // Re-import keeps the folder project
+      // Adding the same folder again updates it
+      await win.evaluate(dir => window._testAddProjectFolder(dir), solo);
+      await expect(win.locator('#project-note')).toHaveText('Updated Solo Project (solo)');
+      const same = path.join(fx.workspace, 'gamma');
+      fs.mkdirSync(same, { recursive: true });
+      await win.evaluate(dir => window._testAddProjectFolder(dir), same);
+      await expect(win.locator('#project-note')).toHaveText('Added gamma');
+      // A title that matches its folder name has no secondary text
+      await expect(win.locator('#project-switcher .project-alt-name')).toHaveCount(0);
+
+      // Re-import keeps the folder projects
       await win.evaluate(([p, w]) => window._testImportProjects(p, w), [fx.specs, fx.workspace]);
       await win.locator('#project-switcher').click();
-      await expect(win.locator('#project-menu .project-menu-item[data-slug]')).toHaveCount(3);
+      await expect(win.locator('#project-menu .project-menu-item[data-slug]')).toHaveCount(4);
     } finally {
       await app.close();
     }

@@ -62,7 +62,8 @@ repos:
 1. **Projects → Import from Portfolio…** in the menu bar. Choose the portfolio folder (or the repo that contains `portfolio/`), then the workspace folder your checkouts live under (the first time only).
 2. The app scans the workspace, up to four folders deep, for git checkouts and matches each repo by its `origin` remote. A project's folder is `<workspace>/<slug>` when that holds all its checkouts, otherwise the folder that does.
 3. Pick a project from the switcher at the left of the top bar. Build and every section open at the project's folder, and the Build sidebar lists its repos. Repos with no local checkout are greyed out.
-4. **Projects → Re-import Projects** picks up changes to the portfolio. If a project's folder is wrong, open the right one and choose **Use current folder as project folder** from the switcher; re-imports keep it.
+4. To add a single repo or folder that isn't in the portfolio, use **Projects → Add Project Folder…**. Its title comes from the `project:` (or `product:`) field in the folder's `RELEASE.md` or `PRODUCT.md` frontmatter when there is one, so the switcher shows the folder name beside the title (for example `My App · my-app`) whenever they differ. A note beside the switcher confirms the project was added, or updated if a project with that name was already there.
+5. **Projects → Re-import Projects** picks up changes to the portfolio. If a project's folder is wrong, open the right one and choose **Use current folder as project folder** from the switcher; re-imports keep it.
 
 ## 4. Tabs
 
@@ -108,13 +109,14 @@ When you quit and reopen the app, your tabs come back where they were, in Build 
 
 ### A status board in Plan & Track
 
-A section can open on a status page of your own: a pinned **Status** tab, always first, that can't be closed. Set it up from the menu bar with **Plan & Track → Set Status Board…**, which asks for three things:
+A section can open on a status page of your own: a pinned **Status** tab, always first, that can't be closed. Set it up from the menu bar with **Plan & Track → Set Status Board…**, which asks for:
 
 | Field | What it is |
 |---|---|
 | **Refresh command** | A shell command that re-renders the all-projects page. It runs in your home folder, in your login shell. Optional: leave it empty for a page that's kept up to date some other way. |
 | **Page** | Where that page is: a file path (`~/…` works), a `file://` URL or an `http(s)://` URL. |
 | **Project refresh command** | A command that renders a page for one project. `{root}` is replaced with the active project's folder, and the command runs there. It must print the path of the page it wrote, ideally on a line starting with `wrote ` (for example `wrote /home/me/boards/alpha.html`). |
+| **Action command** | Optional. Runs when you click an action link on the board (see [Acting on board items](#acting-on-board-items)), with the link's JSON payload on its standard input. |
 
 For example, with a script that renders HTML status pages from your repos:
 
@@ -135,9 +137,47 @@ The setting is stored as `sectionHome` in the preferences file, keyed by section
   "plan": {
     "refresh": "~/bin/render-status --all",
     "page": "~/status/index.html",
-    "projectRefresh": "cd {root} && ~/bin/render-status --project ."
+    "projectRefresh": "cd {root} && ~/bin/render-status --project .",
+    "actionCommand": "~/bin/board-action"
   }
 }
+```
+
+### Acting on board items
+
+A board page can put buttons on its items that act inside the app: open Claude Code on a project with a prompt, or send an answer to a script and refresh the board. They are ordinary links (or forms) to `teamaicoder://` URLs, and they only work in a Status tab: the same page opened in a normal browser tab does nothing with them, and they are never passed to the operating system.
+
+A page can tell it's in a Status tab: `file://` pages there are loaded with `?in=teamaicoder` added to the URL, so it can show these buttons only when they'll work:
+
+```js
+const inApp = new URLSearchParams(location.search).get('in') === 'teamaicoder';
+```
+
+**Open Claude on an item.** `teamaicoder://terminal?project=<slug>&prompt=<text>` (URL-encode the prompt) opens a new Chat + Preview tab in the same section, in the folder of the project with that slug, and runs `claude '<prompt>'` there. The prompt is passed as one quoted argument, so quotes, `$` and backticks in it are safe; line breaks and other control characters become spaces and it is cut at 4000 characters. With no prompt it just runs `claude`. A slug that isn't one of your projects shows an error above the page and runs nothing.
+
+```html
+<a href="teamaicoder://terminal?project=my-app&prompt=Fix%20the%20failing%20login%20test">Fix with Claude</a>
+```
+
+**Run an action.** `teamaicoder://action?payload=<URL-encoded JSON object>` runs the board's **Action command** in your home folder, in your login shell, with the payload JSON on standard input (at most 64 KB; it must be a JSON object). One action runs at a time per board, for up to 60 seconds. When it exits with status 0, the last line it printed shows briefly beside **Refresh** and the board refreshes straight away. When it fails, the end of its error output appears above the page. A form works too, which suits answering a question inline:
+
+```html
+<form method="GET" action="teamaicoder://action">
+  <input type="hidden" name="payload" value='{"question":"Q12","answer":"Ship it on Friday"}'>
+  <button>Answer</button>
+</form>
+```
+
+If the payload has `"followup": {"project": "<slug>", "prompt": "…"}` and the action succeeds, the app then opens Claude on that project as the terminal link does, so an answer can hand straight on to an agent.
+
+A minimal action command, reading the payload with `jq`:
+
+```sh
+#!/bin/sh
+payload=$(cat)
+q=$(printf '%s' "$payload" | jq -r .question)
+printf '%s\n' "$payload" >> ~/status/answers.jsonl
+echo "Recorded the answer to $q"
 ```
 
 ## 5. The Workbench tab

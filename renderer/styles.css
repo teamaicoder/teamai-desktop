@@ -987,6 +987,13 @@ html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMa
 .project-switcher:hover { background: var(--color-surface-variant); }
 .project-switcher svg { transform: rotate(90deg); flex-shrink: 0; opacity: 0.6; }
 .project-switcher-title, .project-menu-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-alt-name { color: var(--color-on-surface-muted); }
+.project-note {
+  margin-right: 12px; padding: 2px 8px; border-radius: 10px; flex-shrink: 0;
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; color: var(--color-git); background: rgba(22, 163, 74, 0.1);
+}
+.project-note[hidden] { display: none; }
 .project-health { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--color-text-file); }
 .project-health.green { background: #16a34a; }
 .project-health.amber { background: #f59e0b; }
@@ -1027,6 +1034,12 @@ html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMa
 .home-mode-btn.active { background: var(--color-primary); color: #fff; }
 .home-mode-btn:disabled { opacity: 0.4; cursor: default; }
 .home-status { flex: 1; font-size: 12px; color: var(--color-on-surface-muted); }
+.home-note {
+  max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; color: var(--color-git); padding: 2px 8px; border-radius: 10px;
+  background: rgba(22, 163, 74, 0.1);
+}
+.home-note[hidden] { display: none; }
 .home-refresh { width: auto; gap: 4px; padding: 0 8px; font-size: 12px; display: inline-flex; align-items: center; }
 .home-error {
   margin: 8px 12px 0; padding: 8px 10px; border-radius: 6px;

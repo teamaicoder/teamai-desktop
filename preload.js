@@ -44,7 +44,7 @@ try {
     openFile:   defaultPath => ipcRenderer.invoke('dialog:openFile',   { defaultPath }),
 
     // Browser (WebContentsView — bypasses X-Frame-Options, full Chromium)
-    browserCreate:   ()           => ipcRenderer.invoke('browser:create'),
+    browserCreate:   (opts)       => ipcRenderer.invoke('browser:create', opts),
     browserNavigate: (id, url)    => ipcRenderer.invoke('browser:navigate', { id, url }),
     browserShow:     (id, bounds) => ipcRenderer.send('browser:show', { id, bounds }),
     browserHide:     (id)         => ipcRenderer.send('browser:hide', { id }),
@@ -74,6 +74,8 @@ try {
     homeRefresh:     opts => ipcRenderer.invoke('home:refresh', opts),
     onHomeConfigure: cb   => ipcRenderer.on('home:configure', (_, p) => cb(p)),
     onHomeClear:     cb   => ipcRenderer.on('home:clear', (_, p) => cb(p)),
+    // Board actions from teamaicoder:// links: { section, type, ... }
+    onHomeEvent:     cb   => ipcRenderer.on('home:event', (_, p) => cb(p)),
 
     // Pages opened from a terminal (teamai-open / $BROWSER): { url, ptyId }
     onPreviewOpen: cb => ipcRenderer.on('preview:open', (_, p) => cb(p)),
