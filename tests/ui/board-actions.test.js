@@ -150,7 +150,8 @@ test.describe('Board actions', () => {
       await expect(chips).toHaveCount(3, { timeout: 8000 });
       await expect.poll(claude.calls, { timeout: 10000 }).toContain(`cwd:${proj.projectRoot}\nargc:0\n--\n`);
       await chips.first().click();
-      expect((await shownView(app)).text).toBe('BOARD 1');
+      // The page itself never navigated: the Status view comes back unchanged
+      await expect.poll(async () => (await shownView(app))?.text, { timeout: 15000 }).toBe('BOARD 1');
     } finally {
       await app.close();
     }
