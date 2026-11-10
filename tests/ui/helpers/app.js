@@ -13,8 +13,11 @@ const ROOT = path.join(__dirname, '..', '..', '..');
 // preferences. Pass { userData } to relaunch against the same dir.
 async function launchApp({ userData } = {}) {
   const dataDir = userData || fs.mkdtempSync(path.join(os.tmpdir(), 'tac-userdata-'));
+  // TAC_EXECUTABLE runs the suite against a packaged build instead of the
+  // source tree, e.g. to check a signed, hardened-runtime app still works.
+  const exe = process.env.TAC_EXECUTABLE;
   const app = await electron.launch({
-    args: [ROOT],
+    ...(exe ? { executablePath: exe, args: [] } : { args: [ROOT] }),
     env: { ...process.env, NODE_ENV: 'test', TAC_USER_DATA: dataDir },
     timeout: 15000,
   });

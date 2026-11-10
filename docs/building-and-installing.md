@@ -41,19 +41,30 @@ A file opened from Finder shows in the Build section, rendered. If the app isn't
 
 ## Optional: sign and notarise with your own Apple Developer ID
 
-If you have an Apple Developer account and want a build that opens without warnings on any Mac, electron-builder can sign and notarise it. Nothing about your identity goes into the repository. It's all read from environment variables:
+If you have an Apple Developer account and want a build that opens without warnings on any Mac, electron-builder signs and notarises it. The app runs under the hardened runtime with the entitlements in `build/entitlements.mac.plist` (JIT for Electron, and library loading for node-pty's native module).
+
+Nothing about your identity goes into the repository. electron-builder finds a **Developer ID Application** certificate in your keychain by itself. Use a G2 certificate: those issued under Apple's original Developer ID authority stop working when it expires on 1 February 2027. If you have more than one with the same name, delete the old one or point `CSC_LINK` at an exported `.p12`.
+
+Notarisation runs when these are set:
 
 ```bash
-export CSC_NAME="Your Name (TEAMID)"            # a "Developer ID Application" certificate in your keychain
 export APPLE_API_KEY=~/keys/AuthKey_XXXXXXXXXX.p8
 export APPLE_API_KEY_ID=XXXXXXXXXX
 export APPLE_API_ISSUER=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-make build
 ```
 
-The API key comes from App Store Connect → Users and Access → Integrations → App Store Connect API. Keep these values in your shell profile or a password manager. **Don't commit them.**
+The key comes from App Store Connect → Users and Access → Integrations → Team Keys (the Developer role is enough). Keep these values in your shell profile or a password manager. **Don't commit them.**
 
-Signing is experimental: the repo doesn't ship hardened-runtime entitlements yet, and node-pty may need them. If a signed build opens but terminals fail, please [open an issue](https://github.com/teamaicoder/teamai-desktop/issues). Fully signed builds and published releases with auto-update are on the [roadmap](roadmap.md).
+| Command | Builds |
+|---|---|
+| `make install` | A signed `.app` for this Mac, copied into `/Applications` |
+| `npm run dist:release` | Signed, notarised `.dmg` and `.zip` for Apple silicon and Intel, in `dist/` |
+
+To check a packaged build still works, run the UI tests against it:
+
+```bash
+TAC_EXECUTABLE="$PWD/dist/mac-arm64/TeamAICoder.app/Contents/MacOS/TeamAICoder" npm run test:ui
+```
 
 ## App icon
 
