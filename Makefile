@@ -14,7 +14,7 @@ setup:
 build: setup
 	npm run dist
 
-# Build and copy the app into /Applications (unsigned unless CSC_NAME is set)
+# Build and copy the app into /Applications (signed when a Developer ID certificate is in the keychain)
 install: build
 	rm -rf /Applications/TeamAICoder.app
 	ditto "$(APP)" /Applications/TeamAICoder.app
